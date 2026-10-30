@@ -9,7 +9,7 @@ import django
 
 
 
-def serve():
+def serve(prepare=None):
     if os.environ.get("GM_CALENDAR_BROWSER") != "1" or os.environ.get("DJANGO_SETTINGS_MODULE") != "config.settings_test_mysql_templates":
         raise RuntimeError("Requires the isolated calendar browser wrapper")
     django.setup()
@@ -65,6 +65,8 @@ def serve():
         credentials[role] = {"email": user.worker.email, "password": password}
     credentials["context"] = {"area": fixture.area.pk, "candidate_code": candidate_code, "project": project.pk, "first": first.pk, "second": second.pk,
         "parent": parent.pk, "child": child.pk, "specialty": specialty.pk, "team": team.pk, "today": str(fixture.today)}
+    if prepare is not None:
+        prepare(fixture, credentials)
     Path(os.environ["GM_QA_SECRETS_PATH"]).write_text(json.dumps(credentials), encoding="utf-8")
     print("Current application, migration 0017, synthetic publications and pagination fixtures ready.", flush=True)
     try:
