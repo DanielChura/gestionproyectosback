@@ -11,12 +11,12 @@ from .remote_integration_browser_server import serve
 def domain_snapshot():
     import hashlib
     from django.db import connection
-    from apps.projects.models import Task, TaskActivity, TaskOrder
+    from apps.projects.models import Task, TaskActivity, TaskOrder, TaskDependency
 
     if connection.settings_dict["HOST"] != "127.0.0.1" or connection.settings_dict["NAME"] != "gm_test_task_status_templates":
         raise RuntimeError("Domain inspection requires the isolated Gantt database")
     result = {}
-    for model in (Task, TaskActivity, TaskOrder):
+    for model in (Task, TaskActivity, TaskOrder, TaskDependency):
         rows = list(model.objects.order_by("pk").values())
         result[model._meta.db_table] = {
             "count": len(rows),
@@ -64,6 +64,10 @@ def prepare(fixture, credentials):
         null_project=null_project.pk, null_parent=null_parent.pk, all_null_child=null_child.pk,
         readonly_project=readonly_project.pk, readonly_task=readonly_task.pk,
     )
+
+    if os.environ.get("GM_GANTT_STAGE") == "2":
+        from .gantt_operational_fixture import prepare_operational
+        prepare_operational(fixture, credentials)
 
     Path(os.environ["GM_BROWSER_REPORT_DIR"], "baseline_domain.json").write_text(
         json.dumps(domain_snapshot(), indent=2), encoding="utf-8",
