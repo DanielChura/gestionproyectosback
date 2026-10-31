@@ -77,6 +77,10 @@ def prepare(fixture, credentials):
         from .gantt_operations_fixture import prepare_operations
         prepare_operations(fixture, credentials)
 
+    if os.environ.get("GM_GANTT_STAGE") == "5":
+        from .gantt_presentation_fixture import prepare_presentation
+        prepare_presentation(fixture, credentials)
+
     Path(os.environ["GM_BROWSER_REPORT_DIR"], "baseline_domain.json").write_text(
         json.dumps(domain_snapshot(), indent=2), encoding="utf-8",
     )
