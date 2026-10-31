@@ -1,3 +1,5 @@
+from collections.abc import Mapping
+
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -197,3 +199,106 @@ class ProjectTaskConfigurationSerializer(StrictSerializer):
             raise serializers.ValidationError({"states": "No se permiten códigos ni nombres duplicados"})
         attrs.pop("reassignments", None)
         return attrs
+
+
+class ProjectMetricsQuerySerializer(StrictSerializer):
+    view = serializers.ChoiceField(choices=("all", "charts", "tables"), required=False, default="all")
+
+    def to_internal_value(self, data):
+        normalized = dict(data)
+        if "mode" in normalized and "view" not in normalized:
+            normalized["view"] = normalized["mode"]
+        if isinstance(data, Mapping):
+            extra = set(data) - set(self.fields) - {"mode"}
+            if extra:
+                raise serializers.ValidationError({"detail": "La solicitud contiene campos no permitidos"})
+        return super().to_internal_value(normalized)
+
+
+class ChartDatasetSerializer(StrictSerializer):
+    label = serializers.CharField(max_length=120)
+    data = serializers.ListField(child=serializers.IntegerField(min_value=0))
+
+
+class ChartSeriesSerializer(StrictSerializer):
+    labels = serializers.ListField(child=serializers.CharField(max_length=120))
+    datasets = ChartDatasetSerializer(many=True)
+    percentages = serializers.ListField(child=serializers.FloatField(), required=False)
+    completion_rates = serializers.ListField(child=serializers.FloatField(), required=False)
+
+
+class ProjectChartsSerializer(StrictSerializer):
+    status_distribution = ChartSeriesSerializer()
+    category_distribution = ChartSeriesSerializer()
+    priority_distribution = ChartSeriesSerializer()
+    tasks_by_person = ChartSeriesSerializer()
+    completion_by_person = ChartSeriesSerializer()
+    timeline = ChartSeriesSerializer()
+
+
+class StatusTableRowSerializer(StrictSerializer):
+    code = serializers.CharField(max_length=50)
+    name = serializers.CharField(max_length=100)
+    state = serializers.CharField(max_length=100)
+    count = serializers.IntegerField(min_value=0)
+    percentage = serializers.FloatField()
+    percent = serializers.FloatField()
+
+
+class CategoryTableRowSerializer(StrictSerializer):
+    code = serializers.CharField(max_length=50)
+    name = serializers.CharField(max_length=100)
+    count = serializers.IntegerField(min_value=0)
+    percentage = serializers.FloatField()
+
+
+class PriorityTableRowSerializer(StrictSerializer):
+    code = serializers.IntegerField()
+    name = serializers.CharField(max_length=50)
+    count = serializers.IntegerField(min_value=0)
+    percentage = serializers.FloatField()
+
+
+class PeopleTableRowSerializer(StrictSerializer):
+    name = serializers.CharField(max_length=200)
+    total = serializers.IntegerField(min_value=0)
+    completed = serializers.IntegerField(min_value=0)
+    pending = serializers.IntegerField(min_value=0)
+    completion_rate = serializers.FloatField()
+
+
+class TimelineTableRowSerializer(StrictSerializer):
+    date = serializers.CharField(max_length=20)
+    created = serializers.IntegerField(min_value=0)
+    completed = serializers.IntegerField(min_value=0)
+    cumulative_created = serializers.IntegerField(min_value=0)
+    cumulative_completed = serializers.IntegerField(min_value=0)
+
+
+class ProjectTablesSerializer(StrictSerializer):
+    status = StatusTableRowSerializer(many=True)
+    category = CategoryTableRowSerializer(many=True)
+    priority = PriorityTableRowSerializer(many=True)
+    people = PeopleTableRowSerializer(many=True)
+    timeline = TimelineTableRowSerializer(many=True)
+
+
+class ProjectSummarySerializer(StrictSerializer):
+    total_tasks = serializers.IntegerField(min_value=0)
+    completed_tasks = serializers.IntegerField(min_value=0)
+    in_progress_tasks = serializers.IntegerField(min_value=0)
+    not_started_tasks = serializers.IntegerField(min_value=0)
+    closed_tasks = serializers.IntegerField(min_value=0)
+    overdue_tasks = serializers.IntegerField(min_value=0)
+    completion_percent = serializers.FloatField()
+    average_progress = serializers.FloatField()
+    estimated_minutes_total = serializers.IntegerField(min_value=0)
+    estimated_minutes_completed = serializers.IntegerField(min_value=0)
+
+
+class ProjectMetricsResponseSerializer(StrictSerializer):
+    project_id = serializers.IntegerField(min_value=1)
+    project_name = serializers.CharField(max_length=200)
+    summary = ProjectSummarySerializer()
+    charts = ProjectChartsSerializer(required=False)
+    tables = ProjectTablesSerializer(required=False)
