@@ -4,6 +4,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from unittest.mock import patch
+from uuid import uuid4
 
 from django.db import IntegrityError, connection
 from django.db.migrations.loader import MigrationLoader
@@ -32,6 +33,7 @@ from apps.projects.models import (
     TaskTransition,
     TaskActivity,
     TaskRelation,
+    TaskCalendarIntent,
     ProjectTeam, TaskOrder,
 )
 from apps.projects.serializers import ProjectCreateSerializer
@@ -73,7 +75,7 @@ class ProjectFlowTests(unittest.TestCase):
             TaskLabel,
             TaskRelation,
             TaskActivity,
-            ProjectTeam, TaskOrder,
+            ProjectTeam, TaskOrder, TaskCalendarIntent,
         ]
         with connection.schema_editor() as editor:
             for model in cls.tables:
@@ -407,7 +409,11 @@ class ProjectFlowTests(unittest.TestCase):
         edit = self.request(
             "patch",
             f"{project.pk}/tasks/{parent_id}/",
-            {"due_date": str(far_date + timedelta(days=10))},
+            {
+                "due_date": str(far_date + timedelta(days=10)),
+                "expected_calendar_revision": self.request("get", f"{project.pk}/tasks/{parent_id}/", user=self.admin).json()["task"]["calendar_revision"],
+                "calendar_intent_id": str(uuid4()),
+            },
             self.admin,
         )
         self.assertEqual(edit.status_code, 200, edit.content)
@@ -585,7 +591,7 @@ class ProjectFlowTests(unittest.TestCase):
         self.assertEqual(self.request("get", f"{project.pk}/", user=self.outsider).status_code, 404)
         ProjectMember.objects.create(project=project, worker=self.worker.worker, active=False)
         self.assertEqual(self.request("get", f"{project.pk}/", user=self.worker).status_code, 404)
-        self.assertEqual(self.request("get", user=self.outsider).json(), [])
+        self.assertEqual(self.request("get", user=self.outsider).json()["results"], [])
 
     def test_assigned_and_confidential_projects_require_participation_and_area(self):
         assigned = self.assigned_project()
@@ -642,8 +648,6 @@ class ProjectFlowTests(unittest.TestCase):
             {"priority": 5},
             {"due_date": str(self.today - timedelta(days=1))},
             {"responsible_id": self.worker.worker_id},
-            {"state_code": "EN_CURSO"},
-            {"state_code": "BLOQUEADA"},
             {"requirement_ids": [requirement.pk]},
             {"created_at": "2020-01-01"},
             {"parent_id": 999999},
@@ -654,6 +658,16 @@ class ProjectFlowTests(unittest.TestCase):
                     400,
                 )
                 self.assertFalse(Task.objects.filter(project=project).exists())
+
+    def test_admin_initial_enabled_states_do_not_require_responsible(self):
+        project = self.project()
+        for code in ("EN_CURSO", "BLOQUEADA"):
+            with self.subTest(state=code):
+                response = self.request("post", f"{project.pk}/tasks/", self.task_payload(state_code=code), self.admin)
+                self.assertEqual(response.status_code, 201, response.content)
+                self.assertEqual(response.json()["state_code"], code)
+                self.assertIsNone(response.json()["responsible_id"])
+                self.assertEqual(response.json()["calendar_revision"], "1")
 
     def test_subtask_dates_and_parent_project_are_validated(self):
         project = self.assigned_project()
@@ -716,6 +730,8 @@ class ProjectFlowTests(unittest.TestCase):
                 "name": "Editada",
                 "priority": 2,
                 "due_date": str(self.today + timedelta(days=9)),
+                "expected_calendar_revision": self.request("get", f"{project.pk}/tasks/{task.pk}/", user=self.worker).json()["task"]["calendar_revision"],
+                "calendar_intent_id": str(uuid4()),
                 "requirement_ids": [requirement.pk],
                 "labels": [{"name": "Extra", "kind": "nontechnical"}],
             },
@@ -798,52 +814,71 @@ class ProjectFlowTests(unittest.TestCase):
             404,
         )
 
-    def test_admin_supervises_globally_but_worker_needs_project_supervision_and_own_assignment(self):
+    def test_worker_state_permission_and_assignment_apply_without_supervision_requirement(self):
         project = self.assigned_project(worker_state=True)
         task = self.task(project, state_code="EN_REVISION", responsible_id=self.worker.worker_id)
-        self.assertEqual(
-            self.request(
-                "post", f"{project.pk}/tasks/{task.pk}/state/", {"state_code": "COMPLETADA"}, self.worker
-            ).status_code,
-            403,
-        )
-        self.assertEqual(
-            self.request(
-                "post", f"{project.pk}/tasks/{task.pk}/state/", {"state_code": "COMPLETADA"}, self.admin
-            ).status_code,
-            200,
-        )
+        membership = ProjectMember.objects.get(project=project, worker=self.worker.worker)
+        self.assertEqual(membership.project_role, "COLABORADOR")
+        allowed = self.request("post", f"{project.pk}/tasks/{task.pk}/state/", {"state_code": "COMPLETADA"}, self.worker)
+        self.assertEqual(allowed.status_code, 200, allowed.content)
+        self.assertEqual(TaskActivity.objects.get(task=task, field="state_code").actor_id, self.worker.pk)
+        unassigned = self.task(project)
+        count = TaskActivity.objects.count()
+        denied = self.request("post", f"{project.pk}/tasks/{unassigned.pk}/state/", {"state_code": "COMPLETADA"}, self.worker)
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(TaskActivity.objects.count(), count)
+        project.worker_state = False
+        project.save(update_fields=["worker_state"])
+        denied = self.request("post", f"{project.pk}/tasks/{task.pk}/state/", {"state_code": "PENDIENTE"}, self.worker)
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(TaskActivity.objects.count(), count)
+        allowed = self.request("post", f"{project.pk}/tasks/{unassigned.pk}/state/", {"state_code": "COMPLETADA"}, self.admin)
+        self.assertEqual(allowed.status_code, 200, allowed.content)
         self.assertFalse(ProjectMember.objects.filter(project=project, worker=self.admin.worker).exists())
+        self.assertEqual(TaskActivity.objects.get(task=unassigned, field="state_code").actor_id, self.admin.pk)
 
-    def test_state_requires_valid_transition_reason_dependencies_and_responsible(self):
+    def test_state_targets_keep_permissions_without_legacy_reason_responsible_or_dependency_rules(self):
         project = self.assigned_project(worker_state=True)
         task = self.task(project)
-        self.assertEqual(
-            self.request(
-                "post", f"{project.pk}/tasks/{task.pk}/state/", {"state_code": "EN_CURSO"}, self.admin
-            ).status_code,
-            400,
-        )
-        self.assertEqual(
-            self.request(
-                "post", f"{project.pk}/tasks/{task.pk}/state/", {"state_code": "BLOQUEADA"}, self.admin
-            ).status_code,
-            400,
-        )
-        self.assertEqual(
-            self.request(
-                "post", f"{project.pk}/tasks/{task.pk}/state/", {"state_code": "COMPLETADA"}, self.admin
-            ).status_code,
-            400,
-        )
+        Task.objects.filter(pk=task.pk).update(reason="Motivo histórico")
+        original = self.state_values(task)
+        for target in ("EN_CURSO", "BLOQUEADA", "COMPLETADA", "CANCELADA", "PENDIENTE"):
+            count = TaskActivity.objects.filter(task=task, field="state_code").count()
+            response = self.request("post", f"{project.pk}/tasks/{task.pk}/state/", {"state_code": target}, self.admin)
+            self.assertEqual(response.status_code, 200, response.content)
+            task.refresh_from_db()
+            self.assertEqual(task.state_code, target)
+            self.assertEqual(self.state_values(task), original)
+            events = TaskActivity.objects.filter(task=task, field="state_code")
+            self.assertEqual(events.count(), count + 1)
+            self.assertEqual(events.latest("pk").actor_id, self.admin.pk)
+        self.assertIsNone(task.responsible_id)
+        self.assertFalse(ProjectMember.objects.filter(project=project, worker=self.admin.worker).exists())
         successor = self.task(project, responsible_id=self.worker.worker_id)
         TaskDependency.objects.create(project=project, predecessor=task, successor=successor)
-        self.assertEqual(
-            self.request(
-                "post", f"{project.pk}/tasks/{successor.pk}/state/", {"state_code": "EN_CURSO"}, self.worker
-            ).status_code,
-            400,
-        )
+        response = self.request("post", f"{project.pk}/tasks/{successor.pk}/state/", {"state_code": "EN_CURSO"}, self.worker)
+        self.assertEqual(response.status_code, 200, response.content)
+        successor.refresh_from_db()
+        self.assertEqual(successor.state_code, "EN_CURSO")
+        self.assertEqual(TaskActivity.objects.filter(task=successor, field="state_code").latest("pk").actor_id, self.worker.pk)
+        self.assertTrue(TaskDependency.objects.filter(predecessor=task, successor=successor).exists())
+        project.worker_state = False
+        project.save(update_fields=["worker_state"])
+        before = TaskActivity.objects.count()
+        for user, target, expected in ((self.worker, "BLOQUEADA", 403), (self.outsider, "EN_CURSO", 404), (self.admin, "DESCONOCIDO", 400)):
+            denied = self.request("post", f"{project.pk}/tasks/{successor.pk}/state/", {"state_code": target}, user)
+            self.assertEqual(denied.status_code, expected, denied.content)
+            successor.refresh_from_db()
+            self.assertEqual(successor.state_code, "EN_CURSO")
+            self.assertEqual(TaskActivity.objects.count(), before)
+        allowed = self.request("post", f"{project.pk}/tasks/{task.pk}/state/", {"state_code": "COMPLETADA"}, self.admin)
+        self.assertEqual(allowed.status_code, 200, allowed.content)
+
+    def state_values(self, task):
+        return Task.objects.filter(pk=task.pk).values(
+            "project_id", "parent_id", "phase_id", "responsible_id", "name", "description",
+            "priority", "start_date", "due_date", "estimated_minutes", "reason", "archived",
+        ).get()
 
     def test_dependencies_allow_later_created_and_dated_predecessors_and_parent_tasks(self):
         project = self.project()
@@ -970,26 +1005,66 @@ class ProjectFlowTests(unittest.TestCase):
             self.assertFalse(response.json()[0]["permissions"]["state"])
             self.assertFalse(response.json()[0]["permissions"]["create_child"])
 
-    def test_mysql_path_calls_existing_state_procedure_with_authenticated_context(self):
-        from apps.projects.services.tasks import change_task_state
+    def test_state_orm_is_atomic_preserves_attributes_and_authenticated_history(self):
+        from apps.projects.services import audit, tasks
+
+        project = self.assigned_project(worker_state=True)
+        task = self.task(project, responsible_id=self.worker.worker_id, labels=[{"name": "QA", "kind": "technical"}])
+        sibling = self.task(project)
+        original = self.state_values(task)
+        labels = list(TaskLabel.objects.filter(task=task).values("id", "name", "kind"))
+        positions = dict(TaskOrder.objects.values_list("task_id", "position"))
+        observed = []
+        apply = tasks.apply_state_change
+
+        def observed_apply(*args, **kwargs):
+            context = audit.operation.get()
+            observed.append((connection.in_atomic_block, context[0].pk, context[1]))
+            return apply(*args, **kwargs)
+
+        with patch.object(tasks, "apply_state_change", side_effect=observed_apply):
+            result = tasks.change_task_state(self.worker, project.pk, task.pk, {"state_code": "EN_CURSO", "reason": ""})
+        self.assertEqual(result.state_code, "EN_CURSO")
+        self.assertEqual(len(observed), 1)
+        self.assertTrue(observed[0][0])
+        self.assertEqual(observed[0][1], self.worker.pk)
+        event = TaskActivity.objects.get(task=task, field="state_code")
+        self.assertEqual(event.actor_id, self.worker.pk)
+        self.assertEqual(event.actor_name, f"{self.worker.worker.first_names} {self.worker.worker.last_names}")
+        self.assertEqual(event.operation_id, observed[0][2])
+        self.assertEqual(event.old_value["code"], "PENDIENTE")
+        self.assertEqual(event.new_value["code"], "EN_CURSO")
+        self.assertEqual(self.state_values(task), original)
+        self.assertEqual(list(TaskLabel.objects.filter(task=task).values("id", "name", "kind")), labels)
+        self.assertEqual(dict(TaskOrder.objects.values_list("task_id", "position")), positions)
+        sibling.refresh_from_db()
+        self.assertEqual(sibling.state_code, "PENDIENTE")
+        self.assertIsNone(audit.operation.get())
+
+    def test_state_history_failure_rolls_back_task_progress_timestamp_and_audit_context(self):
+        from apps.projects.services import audit, tasks
 
         project = self.assigned_project(worker_state=True)
         task = self.task(project, responsible_id=self.worker.worker_id)
-        with patch("apps.projects.services.tasks.connection") as database:
-            database.vendor = "mysql"
-            cursor = database.cursor.return_value.__enter__.return_value
-            cursor.nextset.return_value = False
+        original = Task.objects.filter(pk=task.pk).values().get()
+        positions = dict(TaskOrder.objects.values_list("task_id", "position"))
+        events = list(TaskActivity.objects.values())
+        record = tasks.record_state_change
+        inserted = []
 
-            def apply_state(name, parameters):
-                self.assertFalse(connection.in_atomic_block)
-                Task.objects.filter(pk=parameters[1]).update(state_code=parameters[2])
+        def fail_after_history(*args):
+            record(*args)
+            inserted.append(TaskActivity.objects.filter(task=task, field="state_code").count())
+            raise RuntimeError("Fallo QA posterior al historial")
 
-            cursor.callproc.side_effect = apply_state
-            result = change_task_state(self.worker, project.pk, task.pk, {"state_code": "EN_CURSO", "reason": ""})
-            cursor.callproc.assert_called_once_with(
-                "sp_cambiar_estado_actividad", [project.pk, task.pk, "EN_CURSO", None]
-            )
-            self.assertEqual(result.state_code, "EN_CURSO")
+        with patch.object(tasks, "record_state_change", side_effect=fail_after_history):
+            with self.assertRaisesRegex(RuntimeError, "Fallo QA"):
+                tasks.change_task_state(self.worker, project.pk, task.pk, {"state_code": "COMPLETADA", "reason": ""})
+        self.assertEqual(inserted, [1])
+        self.assertEqual(Task.objects.filter(pk=task.pk).values().get(), original)
+        self.assertEqual(list(TaskActivity.objects.values()), events)
+        self.assertEqual(dict(TaskOrder.objects.values_list("task_id", "position")), positions)
+        self.assertIsNone(audit.operation.get())
 
 
 class ProjectPolicyTests(unittest.TestCase):

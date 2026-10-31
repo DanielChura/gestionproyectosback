@@ -1,5 +1,7 @@
 # Creación de proyectos: área única y fecha final opcional
 
+Aclaración de contratos vigentes: 29/10/2026. Las secciones históricas de esquema se conservan como antecedentes y no certifican el entorno compartido.
+
 ## Contrato de nuevas creaciones
 
 `POST /api/projects/` conserva `area_ids`, obligatorio con exactamente un identificador de área activa. El serializer rechaza ausencia, lista vacía, duplicados y múltiples áreas; el servicio vuelve a comprobar la cardinalidad antes de escribir. La transacción guarda esa área exclusivamente en `proyecto.area_id`. La respuesta mantiene `areas` como una lista de un elemento.
@@ -12,7 +14,7 @@ La modalidad, pertenencia de participantes y permisos mantienen sus reglas. `GET
 
 `Project.end_date` y el estado de migraciones ya declaran `proyecto.fecha_fin` nullable. La migración existente `0002_project_schema` contempla `DATE NULL`; no se modifica ni se aplica ninguna migración para este cambio.
 
-`validate_dates` y el SQL conservado de `sp_validar_estructura_actividad` omiten únicamente el límite superior del proyecto cuando `fecha_fin IS NULL`. Cada tarea sigue necesitando fecha límite, respetando el inicio del proyecto, el periodo de su fase cuando exista y los límites de su tarea padre. Edición, asignación, estados y dependencias mantienen permisos y reglas propios. El formulario de tareas no inventa una fecha cuando el proyecto no la tiene.
+`validate_dates` y el SQL conservado de `sp_validar_estructura_actividad` omiten únicamente el límite superior del proyecto cuando `fecha_fin IS NULL`. El contrato vigente de tarea, posterior a 0011, permite fecha límite ausente o null; start_date sigue siendo obligatorio en persistencia y se asigna por defecto al crear. validate_dates conserva la coherencia inicio/límite y los límites del proyecto/padre; el trigger estructural puede añadir la validación de fase donde esté instalado. La restricción de hoy o después se aplica al crear, sin invalidar fechas históricas existentes. Edición, asignación, estados y dependencias mantienen permisos propios. Los endpoints de estado y dependencias ejecutan servicios ORM transaccionales: no llaman directamente a los procedimientos históricos. La política de estado vigente no exige motivo/responsable ni propaga a hijos; las dependencias conservan validación de grafo, sin bloquear estados ni reprogramar fechas. El formulario de tareas no inventa una fecha cuando el proyecto no la tiene.
 
 Esta revisión no consultó Aiven ni ejecutó procedimientos MySQL. Las pruebas ORM usan exclusivamente la configuración SQLite aislada; la revisión de procedimientos es estática.
 

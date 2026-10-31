@@ -133,7 +133,7 @@ class StateTemplateTests(unittest.TestCase):
         self.assertEqual(self.apply(project, states).status_code, 400)
         self.assertEqual(len(self.configuration(project)["states"]), 3)
 
-    def test_scrum_completed_is_active_and_completion_preserves_supervision(self):
+    def test_scrum_completed_is_active_and_closure_uses_current_permissions(self):
         project = self.assigned_project(worker_state=True)
         response = self.apply(project, self.preset(project, "scrum"))
         self.assertEqual(response.status_code, 200, response.content)
@@ -147,13 +147,13 @@ class StateTemplateTests(unittest.TestCase):
         self.assertTrue(admin_task["permissions"]["create_child"])
         task.refresh_from_db()
         self.assertEqual(task.progress, 0)
-        self.assertEqual(self.request("post", path, {"state_code": states["CERRADO"]["code"]}, self.worker).status_code, 403)
+        self.assertEqual(self.request("post", path, {"state_code": states["CERRADO"]["code"]}, self.worker).status_code, 200)
         closed = self.request("post", path, {"state_code": states["CERRADO"]["code"]}, self.admin)
         self.assertEqual(closed.status_code, 200, closed.content)
         task.refresh_from_db()
         self.assertEqual(task.progress, 100)
         self.assertFalse(task.archived)
-        self.assertEqual(self.request("post", path, {"state_code": states["EN PROGRESO"]["code"]}, self.admin).status_code, 400)
+        self.assertEqual(self.request("post", path, {"state_code": states["EN PROGRESO"]["code"]}, self.admin).status_code, 200)
 
     def test_foreign_custom_codes_cannot_be_applied_or_created(self):
         first = self.project()
@@ -164,12 +164,17 @@ class StateTemplateTests(unittest.TestCase):
         response = self.request("post", f"{other.pk}/tasks/", self.task_payload(state_code=states[0]["code"]), self.admin)
         self.assertEqual(response.status_code, 400)
 
-    def test_custom_transitions_inherit_existing_reason_and_supervision_rules(self):
+    def test_custom_transitions_ignore_discarded_reason_and_supervision_rules(self):
         project = self.assigned_project(worker_state=True)
         states = self.apply(project, self.preset(project)).json()["states"]
         TaskTransition.objects.create(source="EN_CURSO", target="PENDIENTE", supervision_required=True, reason_required=True)
         task = self.task(project, state_code=states[1]["code"], responsible_id=self.worker.worker_id)
         path = f"{project.pk}/tasks/{task.pk}/state/"
-        self.assertEqual(self.request("post", path, {"state_code": states[0]["code"], "reason": "Motivo"}, self.worker).status_code, 403)
-        self.assertEqual(self.request("post", path, {"state_code": states[0]["code"]}, self.admin).status_code, 400)
+        self.assertEqual(self.request("post", path, {"state_code": states[0]["code"]}, self.worker).status_code, 200)
+        self.assertEqual(self.request("post", path, {"state_code": states[0]["code"]}, self.admin).status_code, 200)
         self.assertEqual(self.request("post", path, {"state_code": states[0]["code"], "reason": "Motivo"}, self.admin).status_code, 200)
+
+        project.worker_state = False
+        project.save(update_fields=["worker_state"])
+        self.assertEqual(self.request("post", path, {"state_code": states[1]["code"]}, self.worker).status_code, 403)
+        self.assertEqual(self.request("post", path, {"state_code": states[1]["code"]}, self.admin).status_code, 200)

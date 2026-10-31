@@ -1,6 +1,7 @@
 from importlib import import_module
 from pathlib import Path
 import os
+import re
 
 from django.db import DatabaseError, migrations
 
@@ -50,10 +51,51 @@ def historical(name, reason=False, assignee=False):
     return sql
 
 
+QUOTED_IDENTIFIER = r'(?:`(?:``|[^`])*`|"(?:\"\"|[^\"])*")'
+PROCEDURE_HEADER = re.compile(
+    rf"\ACREATE\s+(?:DEFINER\s*=\s*(?P<user>{QUOTED_IDENTIFIER})\s*@\s*"
+    rf"(?P<host>{QUOTED_IDENTIFIER})\s+)?PROCEDURE\s+"
+    rf"(?P<name>{QUOTED_IDENTIFIER}|[a-zA-Z_][a-zA-Z_0-9]*)(?P<tail>\s*\(.*)\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def definition_header(definition, name):
+    match = PROCEDURE_HEADER.fullmatch(definition["Create Procedure"].strip())
+    if match is None:
+        raise RuntimeError(f"Task state procedure header requires review: {name}")
+    tokens = [match.group(key) for key in ("user", "host", "name") if match.group(key)]
+    if any(token.startswith('"') for token in tokens):
+        if "ANSI_QUOTES" not in definition.get("sql_mode", "").upper().split(","):
+            raise RuntimeError(f"Task state identifier quoting requires ANSI_QUOTES: {name}")
+    identifier = match["name"]
+    if identifier[0] in ('"', "`"):
+        identifier = identifier[1:-1].replace(identifier[0] * 2, identifier[0])
+    if identifier != name:
+        raise RuntimeError(f"Task state procedure name differs: {name}")
+    return match
+
+
+def normalized_definition(definition, name):
+    header = definition_header(definition, name)
+    return baseline.normalized(f"CREATE PROCEDURE `{name}`{header['tail']}")
+
+
+def with_definer(sql, definition, name):
+    header = definition_header(definition, name)
+    if header["user"] is None:
+        return sql
+    return sql.replace("CREATE PROCEDURE", f"CREATE DEFINER={header['user']}@{header['host']} PROCEDURE", 1)
+
+
 def reviewed(definition, name, installed=False):
     candidates = [source(name)] if installed else [historical(name), historical(name, True), historical(name, True, True), source(name)]
-    if baseline.normalized(definition["Create Procedure"]) not in {baseline.normalized(sql) for sql in candidates}:
-        raise RuntimeError("Task state policy differs from reviewed definitions; preserve and review")
+    if not installed and name == direct.NAME:
+        candidates.append(baseline.source(name))
+    if normalized_definition(definition, name) not in {
+        normalized_definition({"Create Procedure": sql}, name) for sql in candidates
+    }:
+        raise RuntimeError(f"Task state policy differs from reviewed definitions: {name}; preserve and review")
 
 
 def maintained(connection):
@@ -76,14 +118,15 @@ def install(apps, schema_editor):
             raise RuntimeError("Task state policy backup requires review")
         for name, definition in saved.payload["procedures"].items():
             reviewed(definition, name)
-            if not created and baseline.normalized(originals[name]["Create Procedure"]) not in (
-                baseline.normalized(definition["Create Procedure"]), baseline.normalized(source(name)),
+            if not created and normalized_definition(originals[name], name) not in (
+                normalized_definition(definition, name),
+                normalized_definition({"Create Procedure": source(name)}, name),
             ):
                 raise RuntimeError("Task state policy backup differs; preserve and review")
         try:
             for name in NAMES:
                 definition = originals[name]
-                helpers.recreate(cursor, name, direct.with_definer(source(name), definition["Create Procedure"]), definition)
+                helpers.recreate(cursor, name, with_definer(source(name), definition, name), definition)
                 reviewed(helpers.read_definition(cursor, "PROCEDURE", name), name, installed=True)
         except (DatabaseError, RuntimeError):
             for name, definition in reversed(list(originals.items())):

@@ -1,23 +1,28 @@
-# Arranca el backend con Waitress: conexiones persistentes a la BD y pool precalentado.
-# Uso:  .\serve.ps1
-$ErrorActionPreference = "Stop"
-$root = $PSScriptRoot
-$url = "http://127.0.0.1:8000"
-$threads = 16
-
-Get-CimInstance Win32_Process |
-  Where-Object { $_.CommandLine -match "manage\.py\s+runserver" } |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-
-$listener = Get-NetTCPConnection -State Listen -LocalPort 8000 -ErrorAction SilentlyContinue
-if ($listener) {
-  $listener | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
-  Start-Sleep -Seconds 1
+param(
+    [ValidateRange(1, 65535)][int]$Port = 8000,
+    [ValidateRange(1, 64)][int]$Threads = 16,
+    [switch]$Warmup
+)
+$ErrorActionPreference = 'Stop'
+$serverRoot = $PSScriptRoot
+$serverExecutable = Join-Path $serverRoot '.venv/Scripts/waitress-serve.exe'
+if (-not (Test-Path -LiteralPath $serverExecutable)) { throw 'Instala requirements.txt en el entorno del backend antes de iniciar Waitress.' }
+$serverListeners = [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners().Port
+if ($Port -in $serverListeners) { throw "El puerto $Port está ocupado. Detén explícitamente el servidor correspondiente o usa otro puerto." }
+$serverWarmup = $null
+try {
+    if ($Warmup) {
+        $serverWarmup = Start-Job -ArgumentList $Port, $Threads -ScriptBlock {
+            param($warmupPort, $warmupThreads)
+            Start-Sleep -Seconds 4
+            1..$warmupThreads | ForEach-Object -Parallel {
+                try { Invoke-WebRequest -Uri "http://127.0.0.1:$using:warmupPort/api/health/" -TimeoutSec 10 | Out-Null } catch { Write-Warning 'No se completó una consulta de precalentamiento.' }
+            } -ThrottleLimit $warmupThreads
+        }
+    }
+    Push-Location -LiteralPath $serverRoot
+    try { & $serverExecutable --listen="127.0.0.1:$Port" --threads=$Threads config.wsgi:application }
+    finally { Pop-Location }
+} finally {
+    if ($null -ne $serverWarmup) { Stop-Job -Job $serverWarmup; Remove-Job -Job $serverWarmup }
 }
-
-# Precalienta los hilos (cada uno abre su conexion a la BD remota).
-Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile", "-Command",
-  "Start-Sleep -Seconds 4; 1..$threads | ForEach-Object { Start-Process curl.exe -ArgumentList '-s','-o','NUL','$url/api/health/' -WindowStyle Hidden }"
-
-Write-Host "Waitress en $url ($threads hilos). Ctrl+C para detener."
-& (Join-Path $root ".venv\Scripts\waitress-serve.exe") --listen=127.0.0.1:8000 --threads=$threads config.wsgi:application

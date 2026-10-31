@@ -60,6 +60,32 @@ class ListConsistencyTests(unittest.TestCase):
         self.assertEqual(TaskActivity.objects.count(), count)
         self.assertEqual(TaskOrder.objects.get(task=task).position, position)
 
+    def test_three_levels_keep_independent_states_parents_and_sibling_order_after_roundtrips(self):
+        project = self.assigned_project()
+        parent = self.task(project)
+        child = self.task(project, parent_id=parent.pk)
+        sibling = self.task(project, parent_id=parent.pk)
+        grandchild = self.task(project, parent_id=child.pk)
+        self.assertEqual(self.manual(project, child, "EN_CURSO").status_code, 200)
+        self.assertEqual(self.manual(project, grandchild, "BLOQUEADA").status_code, 200)
+        order = list(TaskOrder.objects.filter(task__parent=parent).order_by("position").values_list("task_id", flat=True))
+        for operation in (self.manual, self.move, self.manual, self.move):
+            for state in ("EN_REVISION", "PENDIENTE"):
+                self.assertEqual(operation(project, parent, state).status_code, 200)
+                child.refresh_from_db()
+                grandchild.refresh_from_db()
+                self.assertEqual((child.state_code, child.parent_id), ("EN_CURSO", parent.pk))
+                self.assertEqual((grandchild.state_code, grandchild.parent_id), ("BLOQUEADA", child.pk))
+        for state in ("PENDIENTE", "EN_CURSO"):
+            self.assertEqual(self.move(project, child, state).status_code, 200)
+            parent.refresh_from_db()
+            grandchild.refresh_from_db()
+            sibling.refresh_from_db()
+            self.assertEqual(parent.state_code, "PENDIENTE")
+            self.assertEqual(grandchild.state_code, "BLOQUEADA")
+            self.assertEqual(sibling.state_code, "PENDIENTE")
+        self.assertEqual(list(TaskOrder.objects.filter(task__parent=parent).order_by("position").values_list("task_id", flat=True)), order)
+
     def test_conflict_foreign_parent_and_failure_do_not_leave_state_order_or_history(self):
         project = self.assigned_project()
         task, other = self.task(project), self.task(project)

@@ -1,6 +1,4 @@
-from django.db import IntegrityError, transaction
 from django.db.models import Count, Q
-from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -13,6 +11,7 @@ from apps.projects.services.audit import audit_actor
 from apps.workers.services.areas import authorized_areas
 from .models import Team, TeamMember
 from .serializers import TeamMemberCreateSerializer, TeamMemberSerializer, TeamSerializer
+from .services.memberships import add_team_member, remove_team_member
 
 
 class TeamViewSet(viewsets.ModelViewSet):
@@ -26,7 +25,9 @@ class TeamViewSet(viewsets.ModelViewSet):
             raise ValidationError({"detail": "El equipo está asociado a proyectos. Desactívalo para conservar su historial."}) from None
 
     def get_permissions(self):
-        if self.action in ("list", "retrieve", "members"):
+        if self.action in ("list", "retrieve") or (
+            self.action == "members" and self.request.method == "GET"
+        ):
             return [IsAuthenticated()]
         return [IsAdministrator()]
 
@@ -59,41 +60,15 @@ class TeamViewSet(viewsets.ModelViewSet):
                 members = members.filter(left_date__isnull=True)
             serializer = TeamMemberSerializer(members, many=True)
             return Response(serializer.data)
-        serializer = TeamMemberCreateSerializer(data=request.data, context={"team": team})
+        serializer = TeamMemberCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        worker_id = serializer.validated_data["worker_id"]
-        joined_date = serializer.validated_data.get("joined_date") or timezone.localdate()
-        with audit_actor(request.user), transaction.atomic():
-            existing = TeamMember.objects.filter(team=team, worker_id=worker_id).order_by("-id").first()
-            if existing is not None and existing.left_date is not None:
-                existing.joined_date = joined_date
-                existing.left_date = None
-                try:
-                    existing.save(update_fields=["joined_date", "left_date"])
-                except IntegrityError:
-                    return Response(
-                        {"worker_id": "El trabajador ya pertenece al equipo"},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                member = TeamMember.objects.select_related("worker").get(pk=existing.pk)
-                return Response(TeamMemberSerializer(member).data, status=status.HTTP_201_CREATED)
-            try:
-                member = TeamMember.objects.create(team=team, worker_id=worker_id, joined_date=joined_date)
-            except IntegrityError:
-                return Response(
-                    {"worker_id": "El trabajador ya pertenece al equipo"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            member = TeamMember.objects.select_related("worker").get(pk=member.pk)
-            return Response(TeamMemberSerializer(member).data, status=status.HTTP_201_CREATED)
+        with audit_actor(request.user):
+            member = add_team_member(team, **serializer.validated_data)
+        return Response(TeamMemberSerializer(member).data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["delete"], url_path=r"members/(?P<member_id>\d+)")
     def remove_member(self, request, pk=None, member_id=None):
         team = self.get_object()
-        member = TeamMember.objects.filter(pk=member_id, team=team, left_date__isnull=True).first()
-        if member is None:
-            return Response({"detail": "Miembro no disponible"}, status=status.HTTP_404_NOT_FOUND)
-        with audit_actor(request.user), transaction.atomic():
-            member.left_date = timezone.localdate()
-            member.save(update_fields=["left_date"])
+        with audit_actor(request.user):
+            remove_team_member(team, member_id)
         return Response(status=status.HTTP_204_NO_CONTENT)

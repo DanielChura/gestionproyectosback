@@ -1,4 +1,3 @@
-from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -11,6 +10,7 @@ from rest_framework.exceptions import AuthenticationFailed
 from apps.authentication.security import AccessTokenAuthentication, IsAdministrator
 from apps.authentication.models import User
 from apps.authentication.tokens import (
+    digest_token as unittest_digest,
     InvalidToken,
     consume_stored,
     decode_token,
@@ -47,21 +47,22 @@ class TokenTests(SimpleTestCase):
 
     def test_stored_token_cannot_be_reused(self):
         token = encode_token(12, "activation", django_timezone.now() + timedelta(hours=1))
-        record = SimpleNamespace(
-            consumed_at=None,
-            expires_at=django_timezone.now() + timedelta(hours=1),
-            user=SimpleNamespace(pk=12),
-            save=Mock(),
-        )
         queryset = Mock()
-        queryset.select_for_update.return_value.filter.return_value.first.return_value = record
+        queryset.filter.return_value.update.side_effect = [1, 0]
+        user = SimpleNamespace(pk=12)
         with (
             patch("apps.authentication.tokens.AuthToken.objects", queryset),
-            patch("apps.authentication.tokens.transaction.atomic", return_value=nullcontext()),
         ):
-            self.assertEqual(consume_stored(token, "activation")[0].pk, 12)
+            queryset.select_related.return_value.get.return_value = SimpleNamespace(user=user, expires_at=django_timezone.now() + timedelta(hours=1))
+            self.assertIs(consume_stored(token, "activation")[0], user)
+            queryset.filter.assert_called_with(
+                digest=unittest_digest(token), purpose="activation", user_id=12,
+                consumed_at__isnull=True, expires_at__gt=queryset.filter.call_args.kwargs["expires_at__gt"],
+            )
             with self.assertRaises(InvalidToken):
                 consume_stored(token, "activation")
+            self.assertEqual(queryset.select_related.return_value.get.call_count, 1)
+
 
 
 class PermissionTests(SimpleTestCase):

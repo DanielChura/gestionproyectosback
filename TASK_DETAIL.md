@@ -1,5 +1,7 @@
 # Persistencia del detalle de tareas
 
+Actualización de política y documentación: 29/10/2026. Las verificaciones históricas se identifican como tales; el cierre vigente está en [correcciones de base previas a Gantt](docs/reviews/correcciones_base_previas_gantt.md).
+
 ## Cambios
 
 `Task.estimated_minutes` añade la columna nullable `actividad.duracion_estimada_minutos`. Minutos enteros positivos, máximo 2147483647; `null` limpia. Se incorpora al snapshot y al PATCH existente, con el mismo permiso efectivo de edición y sin alterar la creación ni los otros campos omitidos.
@@ -10,7 +12,7 @@
 
 Servicios: `audit.py` coordina actor y operación, restaura/limpia el contexto y las variables MySQL incluso tras error; `activity.py` toma snapshots y pagina operaciones completas; `task_detail.py` concentra lectura de detalle, subtareas, búsqueda y relaciones. `tasks.py` y `statuses.py` registran las mutaciones en sus transacciones existentes. `presentation.py` añade duración y permiso de relaciones; serializers, vistas y urls incorporan los contratos mínimos.
 
-Las dependencias reutilizan el registro existente, con dirección predecesora → sucesora, restricciones y permisos anteriores. Las nuevas relaciones se reservan al administrador de un proyecto editable, igual que la gestión existente de dependencias; abrir un detalle no concede esa facultad.
+Las dependencias conservan dirección predecesora → sucesora y validación de grafo/ámbito mediante manage_dependency (ORM y transacción); no se llama sp_agregar_dependencia desde su endpoint. No bloquean hoy los cambios de estado ni reprograman fechas. Los cambios de estado manuales y move usan apply_state_change ORM: destino habilitado y permisos efectivos, sin motivo, responsable o supervisión adicionales y sin propagación a hijos. Las nuevas relaciones se reservan al administrador de un proyecto editable, igual que la gestión existente de dependencias; abrir un detalle no concede esa facultad.
 
 ## API
 
@@ -45,9 +47,11 @@ La reversión se niega si hay duración, relaciones o historial: exige un plan e
 
 No se aplicó esta migración a Aiven ni a ninguna base compartida. Su aplicación en el entorno de despliegue queda pendiente de la operación autorizada correspondiente.
 
-## Verificación
+## Verificación histórica de la entrega de detalle
 
-Detalles, comandos y capturas: [frontend/docs/task-detail.md](../frontend/docs/task-detail.md).
+Los conteos siguientes pertenecen a aquella ejecución, anterior a la retirada de restricciones de estado y a los bloques de corrección. No son una aprobación del estado final actual. Las menciones a motivo/supervisión y entregables describen lo ensayado entonces; no son requisitos vigentes para cambiar estados. Los helpers SQL conservan pruebas independientes; no prueban que los endpoints los invoquen.
+
+Registro posterior de integración y capturas históricas: [integración GM del 21/10](../frontend/docs/task-detail-verification/project-integrations/README.md). Sus resultados pertenecen a ese corte y no sustituyen las verificaciones del cierre actual.
 
 - 126 pruebas dirigidas SQLite: lógica, contratos, permisos y rollback ORM. No validan SQL MySQL.
 - 22 pruebas en MySQL 8.4 nuevo y dedicado: migración real, trigger, procedimientos reales, reasignación con nombres históricos, reversión de transacción externa, duración, permisos, entregables, jerarquía, dependencias, responsables secundarios, motivo/supervisión y Scrum.

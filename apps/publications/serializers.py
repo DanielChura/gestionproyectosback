@@ -61,6 +61,3 @@ class PublicationUpdateSerializer(StrictSerializer):
         if "requirements" in attrs:
             _validate_unique_specialties(attrs["requirements"])
         return attrs
-
-
-

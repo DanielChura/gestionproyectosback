@@ -1,4 +1,5 @@
 from datetime import timedelta
+from uuid import uuid4
 import unittest
 from unittest.mock import patch
 
@@ -211,44 +212,69 @@ class ProjectIntegrationTests(unittest.TestCase):
         self.assertEqual(self.request("patch", f"{project.pk}/tasks/{task.pk}/", {"priority": 2}, self.admin).status_code, 200)
         task.refresh_from_db()
         self.assertEqual(task.start_date, self.today - timedelta(days=10))
-        response = self.request("patch", f"{project.pk}/tasks/{task.pk}/", {"due_date": str(self.today - timedelta(days=1))}, self.admin)
+        response = self.request("patch", f"{project.pk}/tasks/{task.pk}/", {"due_date": str(self.today - timedelta(days=1)), "expected_calendar_revision": self.snapshot(project, task)["calendar_revision"], "calendar_intent_id": str(uuid4())}, self.admin)
         self.assertEqual(response.status_code, 200, response.content)
-        invalid = self.request("patch", f"{project.pk}/tasks/{task.pk}/", {"start_date": str(self.today - timedelta(days=21))}, self.admin)
+        invalid = self.request("patch", f"{project.pk}/tasks/{task.pk}/", {"start_date": str(self.today - timedelta(days=21)), "expected_calendar_revision": self.snapshot(project, task)["calendar_revision"], "calendar_intent_id": str(uuid4())}, self.admin)
         self.assertEqual(invalid.status_code, 400)
 
-    def test_direct_move_reaches_nonsequential_states_without_manual_reason(self):
+    def test_manual_and_direct_move_reach_enabled_nonsequential_states_without_reason(self):
         project = self.assigned_project()
-        task = self.task(project, responsible_id=self.worker.worker_id)
-        normal = self.request("post", f"{project.pk}/tasks/{task.pk}/state/", {"state_code": "COMPLETADA", "reason": ""}, self.admin)
-        self.assertEqual(normal.status_code, 400)
-        for state in ("COMPLETADA", "BLOQUEADA", "CANCELADA", "OBSERVADA", "PENDIENTE"):
+        task = self.task(project, responsible_id=self.worker.worker_id, labels=[{"name": "Preservada", "kind": "technical"}])
+        Task.objects.filter(pk=task.pk).update(reason="Motivo histórico")
+        before = self.snapshot(project, task)
+        normal = self.request("post", f"{project.pk}/tasks/{task.pk}/state/", {"state_code": "COMPLETADA"}, self.admin)
+        self.assertEqual(normal.status_code, 200, normal.content)
+        self.assertEqual(TaskActivity.objects.filter(task=task, field="state_code").latest("pk").actor_id, self.admin.pk)
+        for state in ("BLOQUEADA", "CANCELADA", "OBSERVADA", "PENDIENTE", "EN_CURSO", "COMPLETADA"):
             self.assertIn(state, self.snapshot(project, task)["move_targets"])
+            count = TaskActivity.objects.filter(task=task, field="state_code").count()
             result = self.move(project, task, state)
             self.assertEqual(result.status_code, 200, result.content)
             task.refresh_from_db()
             self.assertEqual(task.state_code, state)
-            self.assertIsNone(task.reason)
+            self.assertEqual(task.reason, "Motivo histórico")
+            after = self.snapshot(project, task)
+            for field in ("parent_id", "name", "priority", "description", "labels", "start_date", "due_date", "assignees"):
+                self.assertEqual(before[field], after[field], field)
+            events = TaskActivity.objects.filter(task=task, field="state_code")
+            self.assertEqual(events.count(), count + 1)
+            self.assertEqual(events.latest("pk").actor_id, self.admin.pk)
+        count = TaskActivity.objects.count()
+        denied = self.move(project, task, "DESCONOCIDO")
+        self.assertEqual(denied.status_code, 400)
+        self.assertEqual(TaskActivity.objects.count(), count)
 
-    def test_move_destinations_respect_dependencies_subtasks_and_noop_history(self):
+    def test_move_keeps_dependencies_independent_subtasks_and_noop_history(self):
         project = self.assigned_project()
         predecessor = self.task(project, responsible_id=self.worker.worker_id)
         task = self.task(project, responsible_id=self.worker.worker_id)
         self.assertEqual(self.request("post", f"{project.pk}/tasks/{task.pk}/dependencies/", {"predecessor_id": predecessor.pk}, self.admin).status_code, 201)
-        self.assertNotIn("EN_CURSO", self.snapshot(project, task)["move_targets"])
-        before = TaskActivity.objects.count()
-        positions = dict(TaskOrder.objects.values_list("task_id", "position"))
-        self.assertEqual(self.move(project, task, "EN_CURSO").status_code, 400)
-        self.assertEqual(TaskActivity.objects.count(), before)
-        self.assertEqual(dict(TaskOrder.objects.values_list("task_id", "position")), positions)
+        self.assertIn("EN_CURSO", self.snapshot(project, task)["move_targets"])
+        count = TaskActivity.objects.filter(task=task, field="state_code").count()
+        self.assertEqual(self.move(project, task, "EN_CURSO").status_code, 200)
+        self.assertEqual(TaskActivity.objects.filter(task=task, field="state_code").count(), count + 1)
+        predecessor.refresh_from_db()
+        self.assertEqual(predecessor.state_code, "PENDIENTE")
+        self.assertEqual(list(task.incoming_dependencies.values_list("predecessor_id", flat=True)), [predecessor.pk])
         parent = self.task(project, state_code="EN_REVISION", responsible_id=self.worker.worker_id)
         child = self.task(project, parent_id=parent.pk, responsible_id=self.worker.worker_id)
-        self.assertNotIn("COMPLETADA", self.snapshot(project, parent)["move_targets"])
-        self.assertEqual(self.move(project, parent, "COMPLETADA").status_code, 400)
+        self.assertIn("COMPLETADA", self.snapshot(project, parent)["move_targets"])
+        self.assertEqual(self.move(project, parent, "COMPLETADA").status_code, 200)
+        child.refresh_from_db()
+        self.assertEqual(child.state_code, "PENDIENTE")
         self.assertEqual(self.move(project, child, "EN_CURSO").status_code, 200)
         child.refresh_from_db()
-        self.assertEqual(child.parent_id, parent.pk)
+        parent.refresh_from_db()
+        self.assertEqual((child.parent_id, child.state_code, parent.state_code), (parent.pk, "EN_CURSO", "COMPLETADA"))
         count = TaskActivity.objects.count()
+        position = TaskOrder.objects.get(task=child).position
         self.assertEqual(self.move(project, child, "EN_CURSO").status_code, 200)
+        self.assertEqual(TaskActivity.objects.count(), count)
+        self.assertEqual(TaskOrder.objects.get(task=child).position, position)
+        invalid = self.move(project, child, "BLOQUEADA", task.pk)
+        self.assertEqual(invalid.status_code, 400)
+        child.refresh_from_db()
+        self.assertEqual((child.parent_id, child.state_code), (parent.pk, "EN_CURSO"))
         self.assertEqual(TaskActivity.objects.count(), count)
 
     def test_same_state_manual_order_is_stable_and_backfill_preserves_legacy(self):

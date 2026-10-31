@@ -4,6 +4,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from apps.authentication.serializers import StrictSerializer
+from apps.pagination import ListQuerySerializer
 
 
 class ProjectFavoriteSerializer(StrictSerializer):
@@ -103,6 +104,8 @@ class TaskCreateSerializer(StrictSerializer):
 
 
 class TaskEditSerializer(StrictSerializer):
+    expected_calendar_revision = serializers.IntegerField(min_value=1, max_value=9223372036854775807, required=False)
+    calendar_intent_id = serializers.UUIDField(required=False)
     estimated_minutes = serializers.IntegerField(min_value=1, max_value=2147483647, allow_null=True, required=False)
     name = serializers.CharField(max_length=180, required=False)
     description = serializers.CharField(max_length=10000, required=False, allow_blank=True)
@@ -117,6 +120,8 @@ class TaskEditSerializer(StrictSerializer):
     retained_label_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, max_length=50)
 
     def validate(self, attrs):
+        from .services.calendar import validate_calendar_preconditions
+        validate_calendar_preconditions(attrs)
         validate_assignee_input(attrs, self.initial_data)
         if not attrs:
             raise serializers.ValidationError({"detail": "Indica los datos que quieres modificar"})
@@ -199,6 +204,14 @@ class ProjectTaskConfigurationSerializer(StrictSerializer):
             raise serializers.ValidationError({"states": "No se permiten códigos ni nombres duplicados"})
         attrs.pop("reassignments", None)
         return attrs
+
+
+class ProjectListQuerySerializer(ListQuerySerializer):
+    project_id = serializers.IntegerField(min_value=1, required=False)
+    area_id = serializers.IntegerField(min_value=1, required=False)
+    state_code = serializers.CharField(max_length=20, required=False)
+    available = serializers.BooleanField(required=False)
+    associated = serializers.BooleanField(required=False)
 
 
 class ProjectMetricsQuerySerializer(StrictSerializer):

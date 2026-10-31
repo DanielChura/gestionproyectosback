@@ -1,7 +1,6 @@
 from django.utils import timezone
 from rest_framework import serializers
 
-from apps.workers.models import Worker
 from .models import Team, TeamMember
 
 
@@ -42,22 +41,7 @@ class TeamMemberCreateSerializer(serializers.Serializer):
     worker_id = serializers.IntegerField(min_value=1)
     joined_date = serializers.DateField(required=False, default=timezone.localdate)
 
-    def validate_worker_id(self, value):
-        worker = Worker.objects.filter(pk=value).first()
-        if worker is None:
-            raise serializers.ValidationError("Trabajador inexistente")
-        if not worker.active:
-            raise serializers.ValidationError("Trabajador inactivo")
-        self.context["worker"] = worker
+    def validate_joined_date(self, value):
+        if value > timezone.localdate():
+            raise serializers.ValidationError("La fecha de ingreso no puede ser futura")
         return value
-
-    def validate(self, attrs):
-        team = self.context["team"]
-        if not team.active:
-            raise serializers.ValidationError({"team": "Equipo inactivo"})
-        worker = self.context["worker"]
-        if TeamMember.objects.filter(team=team, worker=worker, left_date__isnull=True).exists():
-            raise serializers.ValidationError({"worker_id": "El trabajador ya pertenece al equipo"})
-        if attrs.get("joined_date") and attrs["joined_date"] > timezone.localdate():
-            raise serializers.ValidationError({"joined_date": "La fecha de ingreso no puede ser futura"})
-        return attrs

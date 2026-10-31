@@ -27,8 +27,8 @@ class TaskDetailMySQLTests(cases.TaskDetailTests):
     test_existing_sql_deliverables = mysql_cases.StateTemplatesMySQLTests.test_sql_rejects_unapproved_deliverables_without_partial_configuration
     test_existing_sql_permissions = mysql_cases.StateTemplatesMySQLTests.test_sql_permissions_and_cross_project_destination
     test_existing_sql_hierarchy_dependencies = mysql_cases.StateTemplatesMySQLTests.test_sql_custom_hierarchy_dependencies_and_secondary_assignees
-    test_existing_scrum_supervision = template_cases.StateTemplateTests.test_scrum_completed_is_active_and_completion_preserves_supervision
-    test_existing_reason_supervision = template_cases.StateTemplateTests.test_custom_transitions_inherit_existing_reason_and_supervision_rules
+    test_existing_scrum_supervision = template_cases.StateTemplateTests.test_scrum_completed_is_active_and_closure_uses_current_permissions
+    test_existing_reason_supervision = template_cases.StateTemplateTests.test_custom_transitions_ignore_discarded_reason_and_supervision_rules
 
     @classmethod
     def setUpClass(cls):

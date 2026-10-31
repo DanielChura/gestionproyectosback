@@ -10,11 +10,9 @@ def task_snapshots(tasks, project, user, *, with_order=True):
     tasks = list(tasks)
     if not tasks:
         return []
+    positions, move_revision = order_context(project)
     if with_order:
-        positions, move_revision = order_context(project)
         tasks.sort(key=lambda task: (positions.get(task.pk) is None, positions.get(task.pk, 0), task.pk))
-    else:
-        positions, move_revision = {}, None
     admin = user.global_role == "ADMINISTRADOR"
     terminal = project.state_code in ("FINALIZADO", "CANCELADO")
     manageable = admin and not terminal
@@ -109,6 +107,7 @@ def task_snapshot_from_context(
         "updated_at": task.updated_at,
         "start_date": task.start_date,
         "due_date": task.due_date,
+        "calendar_revision": str(task.calendar_revision),
         "estimated_minutes": task.estimated_minutes,
         "responsible_id": task.responsible_id,
         "responsible_name": f"{task.responsible.first_names} {task.responsible.last_names}"

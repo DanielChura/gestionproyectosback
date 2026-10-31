@@ -13,12 +13,14 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.workers.services.areas import area_summaries, area_summary
+from apps.pagination import ListQuerySerializer
+from apps.workers.services.areas import area_summary
 
 from .mail import DeliveryError, send_link
 from .models import AuthToken, RecoveryRequest, User
 from .security import IsAdministrator, check_throttle, clear_throttle, record_failure, role_annotation
 from .serializers import (
+    AccountListQuerySerializer,
     EmailSerializer,
     InvitationSerializer,
     LoginSerializer,
@@ -33,6 +35,7 @@ from .services.accounts import (
     validate_link_password,
 )
 from .services.eligibility import account_eligible
+from .services.listings import account_page, recovery_page
 from .tokens import InvalidToken, consume_stored, decode_token, issue_access, issue_stored, next_monday_lima
 
 
@@ -250,24 +253,9 @@ class AdminAccountsView(APIView):
     permission_classes = [IsAdministrator]
 
     def get(self, request):
-        accounts = list(
-            User.objects.select_related("worker", "invitation").prefetch_related("userrole_set").order_by("-id")[:50]
-        )
-        areas = area_summaries(user.worker for user in accounts)
-        return Response(
-            [
-                {
-                    "id": user.pk,
-                    "name": f"{user.worker.first_names} {user.worker.last_names}",
-                    "email": user.worker.email,
-                    "role": user.global_role,
-                    "active": user.is_active,
-                    "delivery_status": user.invitation.delivery_status if hasattr(user, "invitation") else "pending",
-                    **areas[user.worker_id],
-                }
-                for user in accounts
-            ]
-        )
+        serializer = AccountListQuerySerializer(data=request.query_params.dict())
+        serializer.is_valid(raise_exception=True)
+        return Response(account_page(request.user, serializer.validated_data))
 
 
 class AdminInviteView(APIView):
@@ -294,22 +282,9 @@ class AdminRecoveryRequestsView(APIView):
     permission_classes = [IsAdministrator]
 
     def get(self, request):
-        requests = (
-            RecoveryRequest.objects.filter(resolved_at__isnull=True)
-            .select_related("user", "user__worker")
-            .order_by("requested_at")[:50]
-        )
-        return Response(
-            [
-                {
-                    "id": entry.pk,
-                    "name": f"{entry.user.worker.first_names} {entry.user.worker.last_names}",
-                    "email": entry.user.worker.email,
-                    "requested_at": entry.requested_at,
-                }
-                for entry in requests
-            ]
-        )
+        serializer = ListQuerySerializer(data=request.query_params.dict())
+        serializer.is_valid(raise_exception=True)
+        return Response(recovery_page(request.user, serializer.validated_data))
 
 
 class AdminIssueResetView(APIView):

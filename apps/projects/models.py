@@ -121,6 +121,7 @@ class Task(models.Model):
     priority = models.PositiveSmallIntegerField(null=True, default=3, db_column="prioridad")
     start_date = models.DateField(db_column="fecha_inicio")
     due_date = models.DateField(null=True, db_column="fecha_fin")
+    calendar_revision = models.PositiveBigIntegerField(default=1, db_column="calendario_revision")
     estimated_minutes = models.PositiveIntegerField(null=True, blank=True, db_column="duracion_estimada_minutos")
     progress = models.DecimalField(max_digits=5, decimal_places=2, default=0, db_column="avance")
     reason = models.CharField(max_length=500, null=True, db_column="motivo_cambio")
@@ -259,3 +260,21 @@ class TaskLabel(models.Model):
     class Meta:
         db_table = "actividad_etiqueta"
         constraints = [models.UniqueConstraint(fields=["task", "name", "kind"], name="uq_actividad_etiqueta")]
+
+
+class TaskCalendarIntent(models.Model):
+    actor = models.ForeignKey("autenticacion.User", on_delete=models.DO_NOTHING, db_constraint=False)
+    task = models.ForeignKey(Task, on_delete=models.DO_NOTHING, db_constraint=False)
+    operation = models.CharField(max_length=32, default="calendar_patch")
+    key = models.UUIDField()
+    payload_hash = models.CharField(max_length=64)
+    expected_revision = models.PositiveBigIntegerField()
+    applied_revision = models.PositiveBigIntegerField(null=True)
+    status = models.CharField(max_length=12, default="pending")
+    created_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "actividad_calendario_intento"
+        constraints = [models.UniqueConstraint(fields=["actor", "task", "operation", "key"], name="uq_calendario_intento")]
+        indexes = [models.Index(fields=["expires_at", "status"], name="ix_calendario_caducidad")]

@@ -1,4 +1,4 @@
-from django.db.models import Prefetch
+from django.db.models import Prefetch, prefetch_related_objects
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -19,8 +19,10 @@ def team_options(area_id, *, project=None, ids=None, lock=False):
         teams = teams.filter(pk__in=ids)
     if lock:
         teams = teams.select_for_update()
+    teams = list(teams)
+    if lock:
         list(TeamMember.objects.select_for_update().filter(team_id__in=ids).order_by("pk"))
-    teams = list(teams.prefetch_related(Prefetch("members", queryset=members, to_attr="current_members")))
+    prefetch_related_objects(teams, Prefetch("members", queryset=members, to_attr="current_members"))
     if ids is not None and {team.pk for team in teams} != set(ids):
         raise ValidationError({"team_ids": "Selecciona equipos activos del área elegida"})
     result = []

@@ -1,13 +1,19 @@
-from rest_framework import viewsets
+from django.db.models import Q
+from drf_spectacular.utils import extend_schema
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
-
-from django.db.models import Q
+from rest_framework.response import Response
 
 from apps.authentication.security import IsAdministrator
+from apps.organization.serializers import SpecialtySerializer
+from apps.organization.services.specialties import specialty_options
 from .models import Worker
-from .serializers import WorkerSerializer, WorkerSpecialtySerializer
-from .services.specialties import handle_worker_specialties
+from .serializers import (
+    WorkerSerializer, WorkerSpecialtySerializer,
+    WorkerSpecialtyTargetSerializer, WorkerSpecialtyWriteSerializer,
+)
+from .services.specialties import delete_worker_specialty, upsert_worker_specialty, worker_specialties
 
 
 class WorkerViewSet(viewsets.ModelViewSet):
@@ -44,6 +50,14 @@ class WorkerViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(id__in=members)
         return queryset
 
+    @extend_schema(responses=SpecialtySerializer(many=True))
+    @action(
+        detail=False, methods=["get"], url_path="me/specialty-options",
+        permission_classes=[IsAuthenticated],
+    )
+    def my_specialty_options(self, request):
+        return Response(SpecialtySerializer(specialty_options(), many=True).data)
+
     @action(
         detail=False,
         methods=["get", "post", "delete"],
@@ -51,7 +65,7 @@ class WorkerViewSet(viewsets.ModelViewSet):
         permission_classes=[IsAuthenticated],
     )
     def me_specialties(self, request):
-        return handle_worker_specialties(request.user.worker, request, None, WorkerSpecialtySerializer)
+        return self._specialties_response(request.user.worker, request)
 
     @action(
         detail=False,
@@ -60,11 +74,11 @@ class WorkerViewSet(viewsets.ModelViewSet):
         permission_classes=[IsAuthenticated],
     )
     def me_specialty_detail(self, request, specialty_id=None):
-        return handle_worker_specialties(request.user.worker, request, specialty_id, WorkerSpecialtySerializer)
+        return self._specialties_response(request.user.worker, request, specialty_id)
 
     @action(detail=True, methods=["get", "post", "delete"], url_path="specialties")
     def specialties(self, request, pk=None):
-        return handle_worker_specialties(self.get_object(), request, None, WorkerSpecialtySerializer)
+        return self._specialties_response(self.get_object(), request)
 
     @action(
         detail=True,
@@ -72,4 +86,22 @@ class WorkerViewSet(viewsets.ModelViewSet):
         url_path=r"specialties/(?P<specialty_id>\d+)",
     )
     def specialty_detail(self, request, pk=None, specialty_id=None):
-        return handle_worker_specialties(self.get_object(), request, specialty_id, WorkerSpecialtySerializer)
+        return self._specialties_response(self.get_object(), request, specialty_id)
+
+    def _specialties_response(self, worker, request, specialty_id=None):
+        if request.method == "GET":
+            return Response(WorkerSpecialtySerializer(worker_specialties(worker), many=True).data)
+        serializer_class = (
+            WorkerSpecialtyTargetSerializer if request.method == "DELETE"
+            else WorkerSpecialtyWriteSerializer
+        )
+        serializer = serializer_class(data=request.data, context={"specialty_id": specialty_id})
+        serializer.is_valid(raise_exception=True)
+        if request.method == "DELETE":
+            delete_worker_specialty(worker, serializer.validated_data["specialty"])
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        relation, created = upsert_worker_specialty(worker, **serializer.validated_data)
+        return Response(
+            WorkerSpecialtySerializer(relation).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )

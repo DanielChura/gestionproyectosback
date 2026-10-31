@@ -122,9 +122,9 @@ class StateTemplatesMySQLTests(unittest.TestCase):
     test_template_scope = template_tests.StateTemplateTests.test_template_validation_authentication_scope_and_preset_immutability
     test_automatic_mapping = template_tests.StateTemplateTests.test_used_state_maps_automatically_and_keeps_subtasks_assignments
     test_identity = template_tests.StateTemplateTests.test_identity_category_color_and_empty_states_survive_edits
-    test_scrum = template_tests.StateTemplateTests.test_scrum_completed_is_active_and_completion_preserves_supervision
+    test_scrum = template_tests.StateTemplateTests.test_scrum_completed_is_active_and_closure_uses_current_permissions
     test_foreign_state = template_tests.StateTemplateTests.test_foreign_custom_codes_cannot_be_applied_or_created
-    test_inherited_rules = template_tests.StateTemplateTests.test_custom_transitions_inherit_existing_reason_and_supervision_rules
+    test_inherited_rules = template_tests.StateTemplateTests.test_custom_transitions_ignore_discarded_reason_and_supervision_rules
 
     def call(self, user, project, task, target, reason=""):
         with audit_actor(user), connection.cursor() as cursor:

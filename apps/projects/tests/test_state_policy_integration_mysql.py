@@ -51,6 +51,9 @@ class StatePolicyIntegrationMySQLTests(unittest.TestCase):
                     MigrationExecutor(connection).apply_migration(state, policy.previous.Migration("0015_task_state_without_assignee", "proyectos"))
             else:
                 MigrationExecutor(connection).apply_migration(state, policy.previous.Migration("0015_task_state_without_assignee", "proyectos"))
+        prepare = getattr(cls, "prepare_policy_definitions", None)
+        if prepare is not None:
+            prepare()
         state = MigrationLoader(None).project_state([("proyectos", "0015_task_state_without_assignee")])
         with patch.dict(os.environ, {"TASK_STATE_POLICY_MAINTENANCE": "1"}):
             MigrationExecutor(connection).apply_migration(state, policy.Migration("0016_task_state_policy_consistency", "proyectos"))

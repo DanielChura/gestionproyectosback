@@ -1,4 +1,5 @@
 import unittest
+from uuid import uuid4
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -167,6 +168,7 @@ class TaskDetailTests(unittest.TestCase):
         project = self.assigned_project(worker_edit=True)
         task = self.task(project, responsible_id=self.worker.worker_id)
         response = self.request("patch", f"{project.pk}/tasks/{task.pk}/", {
+            "expected_calendar_revision": str(task.calendar_revision), "calendar_intent_id": str(uuid4()),
             "responsible_ids": [], "labels": [{"name": "Cálculo QA", "kind": "technical"}],
             "start_date": str(self.today + timedelta(days=1)), "due_date": None, "priority": None,
         }, self.admin)

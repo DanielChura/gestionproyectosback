@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 from django.db import transaction
-from django.db.models import Count, Exists, OuterRef
+from django.db.models import Count
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -74,8 +74,7 @@ def project_snapshot(project, user, detailed=False, *, areas=None, create_tasks=
 
 
 def project_snapshots(projects, user):
-    associations = ProjectMember.objects.filter(project_id=OuterRef("pk"), active=True)
-    projects = list(projects.select_related("area").annotate(has_associated_workers=Exists(associations)))
+    projects = list(projects)
     role = user.global_role
     memberships = set()
     if role == "TRABAJADOR":

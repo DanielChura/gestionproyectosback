@@ -1,5 +1,5 @@
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Exists, OuterRef, Q
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
@@ -41,7 +41,9 @@ def publication_queryset(user):
     if user.global_role != "TRABAJADOR":
         raise PermissionDenied("Cuenta no autorizada")
     today = timezone.localdate()
-    return queryset.filter(
+    return queryset.annotate(applied=Exists(PublicationAssignment.objects.filter(
+        publication_id=OuterRef("pk"), worker_id=user.worker_id, cancelled=False,
+    ))).filter(
         project_id__in=visible_projects(user).values("pk"),
         state=PublicationState.OPEN,
         opening_date__lte=today,
@@ -107,6 +109,11 @@ def publication_snapshot(publication, user):
     allowed_states = set(TRANSITIONS.get(publication.state, set())) if admin else set()
     if not project_open:
         allowed_states.discard(PublicationState.OPEN)
+    applied = getattr(publication, "applied", None)
+    if applied is None and user.global_role == "TRABAJADOR":
+        applied = PublicationAssignment.objects.filter(
+            publication_id=publication.pk, worker_id=user.worker_id, cancelled=False,
+        ).exists()
     return {
         "id": publication.pk,
         "project": {"id": project.pk, "code": project.code, "name": project.name},
@@ -132,12 +139,7 @@ def publication_snapshot(publication, user):
             "edit": editable,
             "change_state": bool(allowed_states),
         },
-        "applied": (
-            user.global_role == "TRABAJADOR"
-            and PublicationAssignment.objects.filter(
-                publication_id=publication.pk, worker_id=user.worker_id, cancelled=False
-            ).exists()
-        ),
+        "applied": bool(applied),
         "can_apply": (
             user.global_role == "TRABAJADOR"
             and publication.state == PublicationState.OPEN

@@ -122,22 +122,33 @@ def create_task(user, project_id, data):
 def edit_task(user, project_id, task_id, data):
     with audit_actor(user), transaction.atomic():
         project = project_for_user(user, project_id, lock=True)
-        task = task_for_user(user, project, task_id)
+        task = task_for_user(user, project, task_id, lock=True)
         require_task_permission(user, project, task, "worker_edit")
         editable_project(project)
+        if "responsible_id" in data or "responsible_ids" in data or "description" in data:
+            require_admin(user)
+        from .calendar import begin_calendar_edit, finish_calendar_edit
+        intent, replayed = begin_calendar_edit(user, task, data)
+        if replayed:
+            return task
         before = activity_values(task)
         estimate = data.get("estimated_minutes")
         if estimate is not None and (isinstance(estimate, bool) or not isinstance(estimate, int) or not 1 <= estimate <= 2147483647):
             raise ValidationError({"estimated_minutes": "Indica minutos enteros positivos o null"})
-        if "responsible_id" in data or "responsible_ids" in data:
-            require_admin(user)
-        if "description" in data:
-            require_admin(user)
         parent = task.parent if task.parent_id else None
         validate_dates(project, data.get("start_date", task.start_date), data.get("due_date", task.due_date), parent=parent, task=task)
         assignee_ids = requested_assignees(data, task)
         validate_assignees(project, assignee_ids, state_rule(project, task.state_code),
                            "responsible_ids" if "responsible_ids" in data else "responsible_id")
+        calendar_changed = (data.get("start_date", task.start_date), data.get("due_date", task.due_date)) != (task.start_date, task.due_date)
+        if intent and not calendar_changed and set(data) <= {"start_date", "due_date", "expected_calendar_revision", "calendar_intent_id"}:
+            finish_calendar_edit(task, intent)
+            return task
+        if calendar_changed:
+            from .calendar import CalendarConflict
+            if task.calendar_revision >= 9223372036854775807:
+                raise CalendarConflict("calendar_revision_exhausted", "La revisión de calendario requiere revisión operativa.")
+            task.calendar_revision += 1
         task.responsible_id = primary_assignee(assignee_ids, task)
         for field in ("name", "description", "priority", "start_date", "due_date", "estimated_minutes"):
             if field in data:
@@ -147,6 +158,9 @@ def edit_task(user, project_id, task_id, data):
         save_assignees(task, assignee_ids)
         save_labels(task, data)
         record_changes(task, before, activity_values(task))
+        if intent:
+            task.refresh_from_db(fields=["start_date", "due_date", "calendar_revision", "updated_at"])
+            finish_calendar_edit(task, intent)
     return task
 
 

@@ -4,6 +4,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as PasswordError
 from rest_framework import serializers
 
+from apps.pagination import ListQuerySerializer
 from apps.organization.models import Area
 from apps.workers.models import Worker
 
@@ -76,3 +77,7 @@ class PasswordSerializer(TokenSerializer):
         except PasswordError as error:
             raise serializers.ValidationError({"password": error.messages}) from None
         return attrs
+
+
+class AccountListQuerySerializer(ListQuerySerializer):
+    active = serializers.BooleanField(required=False)

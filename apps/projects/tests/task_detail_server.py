@@ -81,6 +81,25 @@ def serve():
                               "readonly": readonly.pk, "readonly_task": readonly_task.pk, "scrum": scrum.pk,
                               "scrum_task": scrum_parent.pk, "scrum_child": scrum_child.pk}
     credentials["context"].update({"area": fixture.area.pk, "other_area": fixture.other_area.pk, "teams": [team.pk for team in teams], "specialties": [item.pk for item in specialties]})
+    if os.environ.get("GM_TASK_LIST_BROWSER") == "1":
+        from datetime import date, datetime
+        from zoneinfo import ZoneInfo
+
+        response = fixture.request("post", f"{project.pk}/tasks/{child.pk}/state/", {"state_code": "EN_CURSO"}, fixture.admin)
+        if response.status_code != 200:
+            raise RuntimeError("No se pudo preparar el estado independiente")
+        grandchild = fixture.task(project, parent_id=child.pk, name="Comprobación de nivel dos", state_code="BLOQUEADA", due_date=None)
+        Task.objects.filter(pk=grandchild.pk).update(start_date=parent.start_date)
+        date_cases = []
+        for name, created, start, due in (
+            ("Fecha anterior a creación", 26, 22, 28),
+            ("Fecha válida al crear", 20, 22, 22),
+            ("Fecha igual a creación", 26, 26, 28),
+        ):
+            row = fixture.task(project, name=name, due_date=None)
+            Task.objects.filter(pk=row.pk).update(created_at=datetime(2026, 10, created, 12, tzinfo=ZoneInfo("America/Lima")), start_date=date(2026, 10, start), due_date=date(2026, 10, due))
+            date_cases.append(row.pk)
+        credentials["context"].update({"grandchild": grandchild.pk, "date_cases": date_cases})
     Path(os.environ["GM_QA_SECRETS_PATH"]).write_text(json.dumps(credentials), encoding="utf-8")
 
     print("MySQL temporal y Django reales listos; datos exclusivamente sintéticos.", flush=True)

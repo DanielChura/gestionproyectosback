@@ -107,8 +107,9 @@ def consume_stored(token, purpose, *, user=None):
     if user is not None and user.pk != user_id:
         raise InvalidToken
     now = timezone.now()
+    digest = digest_token(token)
     consumed = AuthToken.objects.filter(
-        digest=digest_token(token),
+        digest=digest,
         purpose=purpose,
         user_id=user_id,
         consumed_at__isnull=True,
@@ -116,7 +117,10 @@ def consume_stored(token, purpose, *, user=None):
     ).update(consumed_at=now)
     if not consumed:
         raise InvalidToken
-    return (user if user is not None else user_id), datetime.fromtimestamp(claims["exp"], tz=utc_timezone.utc)
+    if user is not None:
+        return user, AuthToken.objects.values_list("expires_at", flat=True).get(digest=digest)
+    record = AuthToken.objects.select_related("user").get(digest=digest)
+    return record.user, record.expires_at
 
 
 def inspect_stored(token, purpose):

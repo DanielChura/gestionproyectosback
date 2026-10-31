@@ -74,8 +74,11 @@ def tasks_for_user(user, project):
     )
 
 
-def task_for_user(user, project, task_id):
-    task = tasks_for_user(user, project).filter(pk=task_id).first()
+def task_for_user(user, project, task_id, lock=False):
+    queryset = tasks_for_user(user, project)
+    if lock:
+        queryset = queryset.select_for_update()
+    task = queryset.filter(pk=task_id).first()
     if task is None:
         raise NotFound("Tarea no disponible")
     return task
