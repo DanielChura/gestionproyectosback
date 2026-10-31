@@ -73,6 +73,10 @@ def prepare(fixture, credentials):
         from .gantt_calendar_fixture import prepare_calendar_gestures
         prepare_calendar_gestures(fixture, credentials)
 
+    if os.environ.get("GM_GANTT_STAGE") == "4":
+        from .gantt_operations_fixture import prepare_operations
+        prepare_operations(fixture, credentials)
+
     Path(os.environ["GM_BROWSER_REPORT_DIR"], "baseline_domain.json").write_text(
         json.dumps(domain_snapshot(), indent=2), encoding="utf-8",
     )
@@ -90,6 +94,10 @@ if __name__ == "__main__":
         if os.environ.get("GM_GANTT_STAGE") == "3":
             from .gantt_calendar_fixture import verify_calendar_gestures
             verify_calendar_gestures()
+            raise SystemExit(0)
+        if os.environ.get("GM_GANTT_STAGE") == "4":
+            from .gantt_operations_fixture import verify_operations
+            verify_operations()
             raise SystemExit(0)
         expected = json.loads((target / "baseline_domain.json").read_text(encoding="utf-8"))
         actual = domain_snapshot()
