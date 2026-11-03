@@ -1,5 +1,6 @@
 from django.db import DatabaseError, IntegrityError
 from django.utils import timezone
+from drf_spectacular.utils import extend_schema
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -13,6 +14,8 @@ from .serializers import (
     ProjectCreateSerializer,
     ProjectListQuerySerializer,
     ProjectFavoriteSerializer,
+    ProjectMetricsQuerySerializer,
+    ProjectMetricsResponseSerializer,
     ProjectTaskConfigurationSerializer,
     TaskCreateSerializer,
     TaskEditSerializer,
@@ -22,6 +25,7 @@ from .serializers import (
     TaskMoveSerializer,
 )
 from .services.access import project_for_user, require_admin, tasks_for_user
+from .services.charts import project_chart_data
 from .services.favorites import set_project_favorite
 from .services.listings import project_area_page, project_page
 from .services.presentation import task_snapshot, task_snapshots
@@ -107,6 +111,22 @@ class ProjectListView(ProjectApiView):
 class ProjectDetailView(ProjectApiView):
     def get(self, request, project_id):
         return Response(project_snapshot(project_for_user(request.user, project_id), request.user, detailed=True))
+
+
+class ProjectChartsView(ProjectApiView):
+    serializer_class = ProjectMetricsResponseSerializer
+
+    @extend_schema(
+        parameters=[ProjectMetricsQuerySerializer],
+        responses={200: ProjectMetricsResponseSerializer},
+    )
+    def get(self, request, project_id):
+        params = request.query_params.dict() if hasattr(request.query_params, "dict") else dict(request.query_params)
+        serializer = ProjectMetricsQuerySerializer(data=params)
+        serializer.is_valid(raise_exception=True)
+        view_mode = serializer.validated_data.get("view", "all")
+        data = project_chart_data(request.user, project_id, view=view_mode)
+        return Response(ProjectMetricsResponseSerializer(data).data)
 
 
 class ProjectTeamsView(ProjectApiView):
