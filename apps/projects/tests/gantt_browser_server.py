@@ -82,6 +82,9 @@ def prepare(fixture, credentials):
         prepare_presentation(fixture, credentials)
 
     if os.environ.get("GM_GANTT_STAGE") == "6":
+        if os.environ.get("GM_GANTT_CONTROLS") == "1":
+            from .gantt_controls_fixture import prepare_controls
+            prepare_controls(fixture, credentials)
         from .gantt_closure_fixture import prepare_closure
         prepare_closure(fixture, credentials)
 
