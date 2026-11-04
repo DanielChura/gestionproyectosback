@@ -87,6 +87,9 @@ def prepare(fixture, credentials):
             prepare_controls(fixture, credentials)
         from .gantt_closure_fixture import prepare_closure
         prepare_closure(fixture, credentials)
+        if os.environ.get("GM_GANTT_CONTENT") == "1":
+            from .gantt_content_fixture import prepare_content
+            prepare_content(fixture, credentials)
 
     Path(os.environ["GM_BROWSER_REPORT_DIR"], "baseline_domain.json").write_text(
         json.dumps(domain_snapshot(), indent=2), encoding="utf-8",
@@ -109,6 +112,10 @@ if __name__ == "__main__":
         if os.environ.get("GM_GANTT_STAGE") == "4":
             from .gantt_operations_fixture import verify_operations
             verify_operations()
+            raise SystemExit(0)
+        if os.environ.get("GM_GANTT_CONTENT") == "1":
+            from .gantt_content_fixture import verify_content
+            verify_content()
             raise SystemExit(0)
         if os.environ.get("GM_GANTT_STAGE") == "6":
             from .gantt_closure_fixture import verify_closure
