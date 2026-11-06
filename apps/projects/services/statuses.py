@@ -7,10 +7,10 @@ from django.db.models import Count
 from django.utils import timezone
 from rest_framework.exceptions import APIException, ValidationError
 
-from ..models import ProjectTaskStatus, Task, TaskState, TaskStateDefinition, TaskTransition
+from ..models import ProjectTaskStatus, Task, TaskState, TaskStateDefinition, TaskTransition, Tema
 from .access import project_for_user, require_admin
 from .audit import audit_actor, record_activity
-from .state_categories import CATEGORIES, COLORS, LEGACY_CATEGORIES, LEGACY_COLORS
+from .state_categories import CATEGORIES, DEFAULT_TEMA_IDS, LEGACY_CATEGORIES, LEGACY_TEMA_IDS
 
 
 STANDARD_NAMES = {"PENDIENTE": "PENDIENTE", "EN_CURSO": "EN CURSO", "COMPLETADA": "CERRADO"}
@@ -23,21 +23,45 @@ class ConfigurationConflict(APIException):
     default_detail = {"revision": "La configuración cambió. Vuelve a cargarla antes de guardar"}
 
 
+def _tema_map():
+    return Tema.objects.in_bulk()
+
+
+def _tema_payload(tema_id, temas=None):
+    if temas is None:
+        temas = _tema_map()
+    tema = temas.get(tema_id)
+    if tema is None:
+        return None
+    return {"id": tema.id, "color": tema.color, "icono": tema.icono}
+
+
 def catalog_states():
+    temas = _tema_map()
     states = []
     for item in TaskState.objects.exclude(code__in=TaskStateDefinition.objects.values("code")).values("code", "name", "terminal"):
         category = LEGACY_CATEGORIES.get(item["code"], "closed" if item["terminal"] else "active")
+        tema_id = LEGACY_TEMA_IDS.get(item["code"], DEFAULT_TEMA_IDS[category])
         states.append({"code": item["code"], "name": STANDARD_NAMES.get(item["code"], item["name"]),
-                       "category": category, "color": LEGACY_COLORS.get(item["code"], COLORS[category])})
+                       "category": category, "tema_id": tema_id, "tema": _tema_payload(tema_id, temas)})
     return sorted(states, key=lambda state: (STANDARD_ORDER.get(state["code"], 3), state["code"]))
 
 
 def configured_states(project):
-    return list(ProjectTaskStatus.objects.filter(project=project).order_by("position").values("code", "name", "category", "color")) or catalog_states()
+    states = list(ProjectTaskStatus.objects.filter(project=project).order_by("position").values("code", "name", "category", "tema_id"))
+    if not states:
+        return catalog_states()
+    temas = _tema_map()
+    for state in states:
+        state["tema"] = _tema_payload(state["tema_id"], temas)
+    return states
 
 
 def status_configuration(project, user, *, full=True):
-    saved = list(ProjectTaskStatus.objects.filter(project=project).order_by("position").values("code", "name", "category", "color"))
+    saved = list(ProjectTaskStatus.objects.filter(project=project).order_by("position").values("code", "name", "category", "tema_id"))
+    temas = _tema_map()
+    for state in saved:
+        state["tema"] = _tema_payload(state["tema_id"], temas)
     catalog = catalog_states() if full or not saved else []
     states = saved or catalog
     template = "custom" if saved else "standard"
@@ -100,7 +124,7 @@ def resolve_states(project, requested, validate=None):
             new_definitions.append(TaskStateDefinition(code=actual, project=project, category=category))
             has_custom = True
         resolved.append({"code": actual, "name": item["name"], "category": category,
-                         "color": item.get("color", existing["color"] if existing else COLORS[category])})
+                         "tema_id": item.get("tema_id", existing["tema_id"] if existing else DEFAULT_TEMA_IDS[category])})
     resolved = [state for category in CATEGORIES for state in resolved if state["category"] == category]
     if validate is not None:
         validate(resolved)
@@ -139,7 +163,8 @@ def category_mapping(previous, states, usage):
 def reassign_tasks(project, previous, states, mapping):
     old, current = {state["code"]: state for state in previous}, {state["code"]: state for state in states}
     for source, target in sorted(mapping.items(), key=lambda item: item[0] != item[1]):
-        if old[source] == current[target]:
+        comparable = ("code", "name", "category", "tema_id")
+        if {key: old[source].get(key) for key in comparable} == {key: current[target].get(key) for key in comparable}:
             continue
         tasks = Task.objects.filter(project=project, state_code=source)
         ids = list(tasks.values_list("pk", flat=True)) if connection.vendor != "mysql" or source == target else []

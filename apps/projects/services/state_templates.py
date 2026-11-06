@@ -4,7 +4,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 from ..models import TaskStatusTemplate
 from .access import project_for_user, require_admin
 from .audit import audit_actor
-from .state_categories import COLORS
+from .state_categories import DEFAULT_TEMA_IDS
 
 
 PRESETS = {
@@ -14,22 +14,23 @@ PRESETS = {
     "contenido": ("Contenido", ["LISTO", "REDACTANDO", "APROBACIÓN", "RECHAZADO", "PUBLICADO"]),
     "scrum": ("Scrum", ["PENDIENTE", "EN PROGRESO", "COMPLETADO", "EN REVISIÓN", "ACEPTADO", "RECHAZADO", "BLOQUEADO"]),
 }
-ACTIVE_COLORS = {
-    "normal": ("#6747e8",),
-    "kanban": ("#2089ff", "#6747e8"),
-    "marketing": ("#d97706", "#db2777", "#9333ea", "#6747e8"),
-    "contenido": ("#d97706", "#db2777", "#dc2626", "#9333ea", "#6747e8"),
-    "scrum": ("#d97706", "#db2777", "#262626", "#ea580c", "#dc2626", "#9333ea", "#6747e8"),
+ACTIVE_TEMA_IDS = {
+    "normal": (2,),
+    "kanban": (2, 4),
+    "marketing": (5, 3, 4, 2),
+    "contenido": (5, 3, 3, 4, 2),
+    "scrum": (5, 3, 6, 5, 3, 4, 2),
 }
+ACTIVE_COLORS = ACTIVE_TEMA_IDS
 
 
 def preset_templates():
     return [
         {"id": key, "name": name, "preset": True, "revision": 1, "states": [
-            {"name": "ABIERTO", "category": "not_started", "color": COLORS["not_started"]},
-            *[{"name": state, "category": "active", "color": ACTIVE_COLORS[key][index]}
+            {"name": "ABIERTO", "category": "not_started", "tema_id": DEFAULT_TEMA_IDS["not_started"]},
+            *[{"name": state, "category": "active", "tema_id": ACTIVE_TEMA_IDS[key][index]}
               for index, state in enumerate(active)],
-            {"name": "CERRADO", "category": "closed", "color": COLORS["closed"]},
+            {"name": "CERRADO", "category": "closed", "tema_id": DEFAULT_TEMA_IDS["closed"]},
         ]}
         for key, (name, active) in PRESETS.items()
     ]
@@ -67,6 +68,6 @@ def save_template(user, project_id, data, template_id=None):
                 raise ValidationError({"name": "El proyecto admite hasta 100 plantillas"})
             template = TaskStatusTemplate(project=project)
         template.name = data["name"]
-        template.states = [{key: state[key] for key in ("name", "category", "color")} for state in data["states"]]
+        template.states = [{key: state[key] for key in ("name", "category", "tema_id")} for state in data["states"]]
         template.save()
         return template_snapshot(template)

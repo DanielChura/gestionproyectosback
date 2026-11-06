@@ -124,11 +124,11 @@ class StateTemplateTests(unittest.TestCase):
         project = self.project()
         result = self.apply(project, self.preset(project)).json()
         codes = [item["code"] for item in result["states"]]
-        states = [{**item, "name": "RENOMBRADO", "color": "#9333ea"} if index == 0 else item for index, item in enumerate(result["states"])]
+        states = [{**item, "name": "RENOMBRADO", "tema_id": 3} if index == 0 else item for index, item in enumerate(result["states"])]
         response = self.apply(project, states)
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual([item["code"] for item in response.json()["states"]], codes)
-        self.assertEqual(response.json()["states"][0]["color"], "#9333ea")
+        self.assertEqual(response.json()["states"][0]["tema_id"], 3)
         states[0]["category"] = "active"
         self.assertEqual(self.apply(project, states).status_code, 400)
         self.assertEqual(len(self.configuration(project)["states"]), 3)

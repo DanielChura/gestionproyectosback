@@ -209,6 +209,15 @@ class ProjectRequirement(models.Model):
         constraints = [models.UniqueConstraint(fields=["project", "name", "kind"], name="uq_proyecto_requisito")]
 
 
+class Tema(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    color = models.CharField(max_length=20, db_column="color")
+    icono = models.CharField(max_length=50, db_column="icono")
+
+    class Meta:
+        db_table = "tema"
+
+
 class ProjectTaskStatus(models.Model):
     pk = models.CompositePrimaryKey("project_id", "code")
     project = models.ForeignKey(Project, on_delete=models.DO_NOTHING, db_constraint=False, db_column="proyecto_id")
@@ -216,7 +225,7 @@ class ProjectTaskStatus(models.Model):
     name = models.CharField(max_length=70, db_column="nombre")
     position = models.PositiveSmallIntegerField(db_column="orden")
     category = models.CharField(max_length=20, default="active", db_column="categoria")
-    color = models.CharField(max_length=7, default="#737373")
+    tema = models.ForeignKey(Tema, on_delete=models.DO_NOTHING, db_constraint=False, db_column="tema_id", default=1)
 
     class Meta:
         db_table = "proyecto_estado_actividad"

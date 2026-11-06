@@ -3,11 +3,13 @@ from ..models import TaskStateDefinition
 
 CATEGORIES = ("not_started", "active", "done", "closed")
 LEGACY_CATEGORIES = {"PENDIENTE": "not_started", "COMPLETADA": "closed", "CANCELADA": "closed"}
-COLORS = {"not_started": "#737373", "active": "#2563eb", "done": "#0d9488", "closed": "#26834a"}
-LEGACY_COLORS = {
-    "PENDIENTE": "#46545a", "EN_CURSO": "#1678bd", "COMPLETADA": "#248054",
-    "CANCELADA": "#a42a28", "BLOQUEADA": "#a42a28", "EN_REVISION": "#6b3899", "OBSERVADA": "#6b3899",
+DEFAULT_TEMA_IDS = {"not_started": 6, "active": 2, "done": 1, "closed": 1}
+LEGACY_TEMA_IDS = {
+    "PENDIENTE": 6, "EN_CURSO": 2, "COMPLETADA": 1,
+    "CANCELADA": 3, "BLOQUEADA": 3, "EN_REVISION": 4, "OBSERVADA": 4,
 }
+COLORS = DEFAULT_TEMA_IDS
+LEGACY_COLORS = LEGACY_TEMA_IDS
 
 
 def definition_rules(project):

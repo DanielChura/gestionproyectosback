@@ -26,10 +26,10 @@ class TemplateApplicationTests(unittest.TestCase):
 
     def flow(self, active=3, done=True):
         return [
-            {"code": "draft_start", "name": "ABIERTO", "category": "not_started", "color": "#737373"},
-            *[{"code": f"draft_active_{index}", "name": f"ACTIVO {index}", "category": "active", "color": "#2563eb"} for index in range(active)],
-            *([{"code": "draft_done", "name": "TERMINADO", "category": "done", "color": "#0d9488"}] if done else []),
-            {"code": "draft_closed", "name": "CERRADO", "category": "closed", "color": "#26834a"},
+            {"code": "draft_start", "name": "ABIERTO", "category": "not_started", "tema_id": 6},
+            *[{"code": f"draft_active_{index}", "name": f"ACTIVO {index}", "category": "active", "tema_id": 2} for index in range(active)],
+            *([{"code": "draft_done", "name": "TERMINADO", "category": "done", "tema_id": 1}] if done else []),
+            {"code": "draft_closed", "name": "CERRADO", "category": "closed", "tema_id": 1},
         ]
 
     def install_flow(self, project, states):
@@ -81,7 +81,7 @@ class TemplateApplicationTests(unittest.TestCase):
         kept = next(state for state in old if state["category"] == "active")
         tasks = [self.task(project, state_code=state["code"]) for state in old if state["category"] == "active"]
         requested = self.flow(active=1)
-        requested[1] = {**kept, "name": "RENOMBRADO", "color": "#6747e8"}
+        requested[1] = {**kept, "name": "RENOMBRADO", "tema_id": 2}
         new = self.install_flow(project, requested)
         for task in tasks:
             task.refresh_from_db()

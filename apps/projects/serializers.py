@@ -19,7 +19,7 @@ class LabelSerializer(StrictSerializer):
 class InitialTaskStateSerializer(StrictSerializer):
     name = serializers.CharField(max_length=70)
     category = serializers.ChoiceField(choices=("not_started", "active", "done", "closed"))
-    color = serializers.RegexField(r"^#[0-9a-fA-F]{6}$")
+    tema_id = serializers.IntegerField(min_value=1)
 
 
 class ProjectCreateSerializer(StrictSerializer):
@@ -159,7 +159,7 @@ class ProjectTaskStatusSerializer(StrictSerializer):
     code = serializers.CharField(max_length=20)
     name = serializers.CharField(max_length=70)
     category = serializers.ChoiceField(choices=("not_started", "active", "done", "closed"), required=False)
-    color = serializers.RegexField(r"^#[0-9a-fA-F]{6}$", required=False)
+    tema_id = serializers.IntegerField(min_value=1, required=False)
 
 
 class StateReassignmentSerializer(StrictSerializer):
@@ -171,7 +171,7 @@ class StateReassignmentSerializer(StrictSerializer):
 class TemplateStateSerializer(StrictSerializer):
     name = serializers.CharField(max_length=70)
     category = serializers.ChoiceField(choices=("not_started", "active", "done", "closed"))
-    color = serializers.RegexField(r"^#[0-9a-fA-F]{6}$")
+    tema_id = serializers.IntegerField(min_value=1)
 
 
 class TaskStatusTemplateSerializer(StrictSerializer):

@@ -167,6 +167,23 @@ class MeView(APIView):
     def get(self, request):
         return Response(profile(request.user))
 
+    def patch(self, request):
+        user = request.user
+        worker = user.worker
+        data = request.data or {}
+        if "first_names" in data:
+            worker.first_names = str(data.get("first_names") or "").strip()
+        if "last_names" in data:
+            worker.last_names = str(data.get("last_names") or "").strip()
+        if "email" in data:
+            worker.email = str(data.get("email") or "").strip()
+        worker.save()
+        password = data.get("password")
+        if password:
+            user.set_password(str(password))
+            user.save(update_fields=["password"])
+        return Response(profile(user))
+
 
 class RecoveryRequestView(APIView):
     permission_classes = [AllowAny]

@@ -40,7 +40,7 @@ class ListConsistencyTests(unittest.TestCase):
                     self.assertEqual(saved["state_code"], task.state_code)
                     self.assertEqual(task.reason, "Motivo histórico conservado")
                     expected = next(item for item in self.request("get", f"{project.pk}/task-states/", user=self.admin).json()["states"] if item["code"] == state)
-                    for field in ("name", "category", "color"):
+                    for field in ("name", "category", "tema_id"):
                         self.assertEqual(saved[f"state_{field}"], expected[field])
                     for field in ("name", "description", "parent_id", "responsible_id", "assignees", "start_date", "due_date", "labels", "estimated_minutes", "priority"):
                         self.assertEqual(saved[field], original[field], field)

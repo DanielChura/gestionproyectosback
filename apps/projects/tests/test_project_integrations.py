@@ -102,7 +102,7 @@ class ProjectIntegrationTests(unittest.TestCase):
     def test_bad_flow_rolls_back_project_members_teams_and_new_states(self):
         team = self.team("Equipo", [self.worker])
         response = self.request("post", data=self.project_payload(mode="assigned", participant_source="teams", team_ids=[team.pk],
-            initial_task_states=[{"name": "Solo abierto", "category": "not_started", "color": "#737373"}]), user=self.admin)
+            initial_task_states=[{"name": "Solo abierto", "category": "not_started", "tema_id": 1}]), user=self.admin)
         self.assertEqual(response.status_code, 400, response.content)
         self.assertFalse(Project.objects.exists())
         self.assertFalse(ProjectMember.objects.exists())
