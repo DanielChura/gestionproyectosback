@@ -9,6 +9,7 @@ from .views import (
     AdminIssueResetView,
     AdminRecoveryRequestsView,
     AdminResendInvitationView,
+    AdminUnlockView,
     LinkPasswordValidationView,
     LinkPreviewView,
     LoginView,
@@ -35,6 +36,10 @@ urlpatterns = [
     path(
         "admin/accounts/<int:account_id>/resend-invitation/",
         AdminResendInvitationView.as_view(),
+    ),
+    path(
+        "admin/accounts/<int:account_id>/unlock/",
+        AdminUnlockView.as_view(),
     ),
     path("activate/preview/", LinkPreviewView.as_view(), {"purpose": "activation"}),
     path(

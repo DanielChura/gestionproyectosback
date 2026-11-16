@@ -3,7 +3,7 @@ from uuid import uuid4
 from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 
 from apps.authentication.models import User
 from apps.organization.models import Area
@@ -12,7 +12,7 @@ from apps.workers.models import Worker
 from apps.workers.services.access import eligible_workers
 
 from ..models import Project, ProjectFavorite, ProjectMember, ProjectRequirement, ProjectState, ProjectTaskStatus, ProjectType, ProjectTeam
-from .access import can_create_tasks, require_admin
+from .access import can_create_tasks, require_admin, supervises_project
 from .audit import audit_actor
 from .statuses import status_configuration
 
@@ -31,7 +31,7 @@ def eligible_project_workers(project):
     return eligible_workers([area.pk], assume_active=True)
 
 
-def project_snapshot(project, user, detailed=False, *, areas=None, create_tasks=None):
+def project_snapshot(project, user, detailed=False, *, areas=None, create_tasks=None, assign_tasks=None):
     admin = user.global_role == "ADMINISTRADOR"
     has_associated_workers = getattr(project, "has_associated_workers", None)
     if has_associated_workers is None:
@@ -52,6 +52,7 @@ def project_snapshot(project, user, detailed=False, *, areas=None, create_tasks=
         "permissions": {
             "manage": admin and project.state_code not in ("FINALIZADO", "CANCELADO"),
             "create_tasks": can_create_tasks(user, project) if create_tasks is None else create_tasks,
+            "assign_tasks": supervises_project(user, project) if assign_tasks is None else assign_tasks,
         },
     }
     if detailed:
@@ -65,7 +66,11 @@ def project_snapshot(project, user, detailed=False, *, areas=None, create_tasks=
         if not admin:
             members = members.filter(worker_id=user.worker_id)
         result["participants"] = [
-            {"id": member.worker_id, "name": f"{member.worker.first_names} {member.worker.last_names}"}
+            {
+                "id": member.worker_id,
+                "name": f"{member.worker.first_names} {member.worker.last_names}",
+                "role": member.project_role,
+            }
             for member in members.select_related("worker")
         ]
         result["requirements"] = list(ProjectRequirement.objects.filter(project=project).values("id", "name", "kind"))
@@ -76,15 +81,15 @@ def project_snapshot(project, user, detailed=False, *, areas=None, create_tasks=
 def project_snapshots(projects, user):
     projects = list(projects)
     role = user.global_role
-    memberships = set()
+    memberships = {}
     if role == "TRABAJADOR":
-        memberships = set(
+        memberships = dict(
             ProjectMember.objects.filter(
                 project__in=projects,
                 worker_id=user.worker_id,
                 active=True,
                 worker__active=True,
-            ).values_list("project_id", flat=True)
+            ).values_list("project_id", "project_role")
         )
     return [
         project_snapshot(
@@ -94,11 +99,35 @@ def project_snapshots(projects, user):
             create_tasks=project.state_code not in ("FINALIZADO", "CANCELADO")
             and (
                 role == "ADMINISTRADOR"
-                or (role == "TRABAJADOR" and project.worker_create and project.pk in memberships)
+                or (
+                    role == "TRABAJADOR"
+                    and (project.worker_create or memberships.get(project.pk) in ("RESPONSABLE", "REVISOR"))
+                    and project.pk in memberships
+                )
             ),
+            assign_tasks=role == "ADMINISTRADOR"
+            or memberships.get(project.pk) in ("RESPONSABLE", "REVISOR"),
         )
         for project in projects
     ]
+
+
+def set_project_member_role(user, project_id, worker_id, role):
+    require_admin(user)
+    with transaction.atomic():
+        project = Project.objects.select_for_update().filter(pk=project_id).first()
+        if project is None:
+            raise NotFound("Proyecto no disponible")
+        member = (
+            ProjectMember.objects.select_for_update()
+            .filter(project=project, worker_id=worker_id, active=True)
+            .first()
+        )
+        if member is None:
+            raise NotFound("El trabajador no es integrante activo del proyecto")
+        member.project_role = role
+        member.save(update_fields=["project_role"])
+    return project_snapshot(project, user, detailed=True)["participants"]
 
 
 def create_project(user, data):

@@ -15,6 +15,8 @@ from apps.workers.services.areas import area_summary, authorized_areas
 
 from ..mail import DeliveryError, send_link
 from ..models import AuthToken, Invitation, Role, User, UserRole
+from ..audit import record_auth_event
+from ..security import consume_send_quota
 from ..serializers import PasswordSerializer
 from ..tokens import InvalidToken, consume_stored, decode_token, digest_token, inspect_stored, issue_stored
 from .eligibility import account_eligible
@@ -82,6 +84,7 @@ def deliver_invitation(user_id, actor):
             and invitation.last_attempt_at > now - timedelta(seconds=60)
         ):
             raise InvitationConflict
+        consume_send_quota("activation", user.pk)
         token = issue_stored(user, "activation", now + timedelta(hours=settings.AUTH_LINK_HOURS), revoke_previous=True)
         record = AuthToken.objects.get(digest=digest_token(token))
         invitation.token = record
@@ -96,11 +99,22 @@ def deliver_invitation(user_id, actor):
         Invitation.objects.filter(pk=invitation.pk, token=record).update(delivery_status=error.delivery_status)
         if error.delivery_status == "failed":
             AuthToken.objects.filter(pk=record.pk).update(consumed_at=timezone.now())
+        record_auth_event(
+            "invitation_failed",
+            actor_id=getattr(actor, "pk", None),
+            account_id=user.pk,
+            detail=error.delivery_status,
+        )
         raise InvitationDeliveryError(
             {"detail": InvitationDeliveryError.default_detail, "account_id": user.pk}
         ) from None
     Invitation.objects.filter(pk=invitation.pk, token=record).update(
         delivery_status="accepted", provider_message_id=message_id
+    )
+    record_auth_event(
+        "invitation_sent",
+        actor_id=getattr(actor, "pk", None),
+        account_id=user.pk,
     )
     return {"detail": "Invitación aceptada por el proveedor de correo", "account_id": user.pk}
 

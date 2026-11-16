@@ -10,8 +10,6 @@ from ..models import Team, TeamMember
 def add_team_member(team, *, worker_id, joined_date):
     team = Team.objects.select_for_update().get(pk=team.pk)
     worker = Worker.objects.select_for_update().filter(pk=worker_id).first()
-    if not team.active:
-        raise ValidationError({"team": "Equipo inactivo"})
     if worker is None:
         raise ValidationError({"worker_id": "Trabajador inexistente"})
     if not worker.active:
@@ -33,12 +31,25 @@ def add_team_member(team, *, worker_id, joined_date):
 
 @transaction.atomic
 def remove_team_member(team, member_id):
-    Team.objects.select_for_update().get(pk=team.pk)
+    team = Team.objects.select_for_update().get(pk=team.pk)
     member = (
         TeamMember.objects.select_for_update()
         .filter(pk=member_id, team=team, left_date__isnull=True).first()
     )
     if member is None:
         raise NotFound("Miembro no disponible")
+    if team.active:
+        active_members = TeamMember.objects.filter(
+            team=team, left_date__isnull=True
+        ).count()
+        if active_members <= 2:
+            raise ValidationError(
+                {
+                    "detail": (
+                        "No se puede retirar al integrante porque el equipo quedaría con menos de "
+                        "2 integrantes activos. Agrega otro integrante y vuelve a intentarlo."
+                    )
+                }
+            )
     member.left_date = timezone.localdate()
     member.save(update_fields=["left_date"])

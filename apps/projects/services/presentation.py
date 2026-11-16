@@ -27,9 +27,25 @@ def task_snapshots(tasks, project, user, *, with_order=True):
         )
     )
     member = membership is not None
-    can_create = not terminal and (
+    supervises = bool(
         admin
-        or (user.global_role == "TRABAJADOR" and project.worker_create and member and membership["worker__active"])
+        or (
+            member
+            and membership["worker__active"]
+            and membership["project_role"] in ("RESPONSABLE", "REVISOR")
+        )
+    )
+    can_create = bool(
+        not terminal
+        and (
+            admin
+            or (
+                user.global_role == "TRABAJADOR"
+                and (project.worker_create or supervises)
+                and member
+                and membership["worker__active"]
+            )
+        )
     )
     definitions = configured_states(project)
     states = {state["code"]: state["name"] for state in definitions}
@@ -72,7 +88,8 @@ def task_snapshots(tasks, project, user, *, with_order=True):
         task_snapshot_from_context(
             task, user, states, labels[task.pk], dependencies_by_task[task.pk],
             transitions_by_state[task.state_code], admin=admin, terminal=terminal, manageable=manageable,
-            member=member, worker_edit=project.worker_edit, worker_state=project.worker_state, can_create=can_create,
+            member=member, supervises=supervises,
+            worker_edit=project.worker_edit, worker_state=project.worker_state, can_create=can_create,
             assignees=list(sorted(assignees[task.pk].values(), key=lambda worker: worker["id"])),
             metadata=metadata.get(task.state_code, {}),
         )
@@ -92,11 +109,11 @@ def task_snapshots(tasks, project, user, *, with_order=True):
 
 def task_snapshot_from_context(
     task, user, states, labels, dependencies, transitions, *, admin, terminal, manageable,
-    member, worker_edit, worker_state, can_create, assignees, metadata,
+    member, supervises, worker_edit, worker_state, can_create, assignees, metadata,
 ):
     assigned = any(worker["id"] == user.worker_id for worker in assignees)
-    can_edit = not terminal and (admin or (assigned and member and worker_edit))
-    can_state = not terminal and (admin or (assigned and member and worker_state))
+    can_edit = not terminal and (supervises or (assigned and member and worker_edit))
+    can_state = not terminal and (supervises or (assigned and member and worker_state))
     return {
         "id": task.pk,
         "parent_id": task.parent_id,
@@ -127,8 +144,8 @@ def task_snapshot_from_context(
         "permissions": {
             "edit": can_edit,
             "state": can_state,
-            "assign": manageable,
-            "create_child": can_create and (admin or assigned) and metadata.get("category") not in ("done", "closed"),
+            "assign": not terminal and supervises,
+            "create_child": can_create and (supervises or assigned) and metadata.get("category") not in ("done", "closed"),
             "dependencies": manageable,
             "relations": manageable,
         },

@@ -3,9 +3,9 @@ from django.db import connection, models, transaction
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
-from ..models import ProjectMember, ProjectRequirement, Task, TaskDependency, TaskLabel, TaskTransition
+from ..models import ProjectRequirement, Task, TaskDependency, TaskLabel, TaskTransition
 from ..serializers import validate_labels
-from .access import project_for_user, require_admin, require_task_creation, require_task_permission, task_for_user
+from .access import project_for_user, require_admin, require_task_creation, require_task_permission, supervises_project, task_for_user
 from .audit import audit_actor, record_activity
 from .activity import activity_values, record_changes, record_state_change
 from .statuses import require_configured_state
@@ -74,13 +74,16 @@ def create_task(user, project_id, data):
         assignee_ids = requested_assignees(data)
         rule = state_rule(project, data["state_code"])
         if user.global_role != "ADMINISTRADOR":
-            if set(assignee_ids) - {user.worker_id}:
-                raise PermissionDenied("Solo el Administrador puede asignar tareas a otros trabajadores")
+            if not supervises_project(user, project):
+                if set(assignee_ids) - {user.worker_id}:
+                    raise PermissionDenied(
+                        "Solo el Administrador o el coordinador del proyecto pueden asignar tareas a otros trabajadores"
+                    )
+                assignee_ids = [user.worker_id]
             if rule != "PENDIENTE":
                 raise ValidationError(
                     {"state_code": "Crea la tarea pendiente y usa las transiciones autorizadas para cambiar su estado"}
                 )
-            assignee_ids = [user.worker_id]
         require_configured_state(project, data["state_code"])
         parent = None
         if data["parent_id"]:
@@ -183,15 +186,7 @@ def edit_task(user, project_id, task_id, data):
 
 
 def has_supervision(user, project):
-    return (
-        user.global_role == "ADMINISTRADOR"
-        or ProjectMember.objects.filter(
-            project=project,
-            worker_id=user.worker_id,
-            active=True,
-            project_role__in=("RESPONSABLE", "REVISOR"),
-        ).exists()
-    )
+    return supervises_project(user, project)
 
 
 def transition_context(user, project, definitions=None, rules=None, legacy=None, supervision=None, *, preview=False):

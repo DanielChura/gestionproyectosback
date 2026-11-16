@@ -7,6 +7,7 @@ from rest_framework import serializers
 from apps.pagination import ListQuerySerializer
 from apps.organization.models import Area
 from apps.workers.models import Worker
+from apps.workers.validators import gmail_address
 
 from .models import FINAL_ROLES
 
@@ -41,7 +42,7 @@ class InvitationSerializer(StrictSerializer):
     area_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), default=list)
 
     def validate_email(self, value):
-        email = value.strip().lower()
+        email = gmail_address(value)
         if Worker.objects.filter(email__iexact=email).exists():
             raise serializers.ValidationError("El correo ya está registrado")
         return email

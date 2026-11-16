@@ -77,6 +77,10 @@ def validate_assignee_input(attrs, initial):
                 raise serializers.ValidationError({"responsible_ids": "Usa solo una forma de indicar los responsables"})
 
 
+class ProjectMemberRoleSerializer(StrictSerializer):
+    role = serializers.ChoiceField(choices=("COLABORADOR", "RESPONSABLE", "REVISOR"))
+
+
 class TaskScheduleSerializer(StrictSerializer):
     precision = serializers.ChoiceField(choices=("day", "hour"))
     start = serializers.CharField(max_length=40)

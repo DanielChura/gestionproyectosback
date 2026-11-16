@@ -11,6 +11,20 @@ def require_admin(user):
         raise PermissionDenied("Esta operación requiere Administrador")
 
 
+def supervises_project(user, project):
+    if user.global_role == "ADMINISTRADOR":
+        return True
+    return (
+        user.global_role == "TRABAJADOR"
+        and ProjectMember.objects.filter(
+            project=project,
+            worker_id=user.worker_id,
+            active=True,
+            project_role__in=("RESPONSABLE", "REVISOR"),
+        ).exists()
+    )
+
+
 def can_access_project(user, area_id, *, is_member, is_assigned):
     if not account_eligible(user):
         return False
@@ -85,7 +99,7 @@ def task_for_user(user, project, task_id, lock=False):
 
 
 def require_task_permission(user, project, task, permission):
-    if user.global_role == "ADMINISTRADOR":
+    if supervises_project(user, project):
         return
     assigned = task.responsible_id == user.worker_id or TaskAssignee.objects.filter(
         task=task, worker_id=user.worker_id,
@@ -101,16 +115,15 @@ def can_create_tasks(user, project):
         return False
     if user.global_role == "ADMINISTRADOR":
         return True
-    return bool(
-        user.global_role == "TRABAJADOR"
-        and project.worker_create
-        and ProjectMember.objects.filter(
-            project=project,
-            worker_id=user.worker_id,
-            active=True,
-            worker__active=True,
-        ).exists()
-    )
+    if user.global_role != "TRABAJADOR":
+        return False
+    member = ProjectMember.objects.filter(
+        project=project,
+        worker_id=user.worker_id,
+        active=True,
+        worker__active=True,
+    ).exists()
+    return bool(member and (project.worker_create or supervises_project(user, project)))
 
 
 def require_task_creation(user, project):

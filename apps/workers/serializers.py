@@ -6,6 +6,7 @@ from rest_framework import serializers
 from apps.organization.models import Specialty
 from .models import Worker, WorkerSpecialty
 from .services.specialties import replace_worker_specialties
+from .validators import gmail_address
 
 
 class WorkerSpecialtySerializer(serializers.ModelSerializer):
@@ -89,3 +90,6 @@ class WorkerSerializer(serializers.ModelSerializer):
         if len(identifiers) != len(set(identifiers)):
             raise serializers.ValidationError("No repitas una especialidad.")
         return values
+
+    def validate_email(self, value):
+        return gmail_address(value)

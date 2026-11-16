@@ -16,6 +16,7 @@ from .serializers import (
     ProjectFavoriteSerializer,
     ProjectMetricsQuerySerializer,
     ProjectMetricsResponseSerializer,
+    ProjectMemberRoleSerializer,
     ProjectTaskConfigurationSerializer,
     TaskCreateSerializer,
     TaskEditSerializer,
@@ -30,7 +31,7 @@ from .services.dependency_undo import issue_undo
 from .services.favorites import set_project_favorite
 from .services.listings import project_area_page, project_page
 from .services.presentation import task_snapshot, task_snapshots
-from .services.projects import create_project, project_snapshot, worker_candidates
+from .services.projects import create_project, project_snapshot, set_project_member_role, worker_candidates
 from .services.tasks import change_task_state, create_task, edit_task, manage_dependency
 from .services.statuses import catalog_states, configure_task_states, status_configuration
 from .services.state_templates import project_templates, save_template
@@ -112,6 +113,18 @@ class ProjectListView(ProjectApiView):
 class ProjectDetailView(ProjectApiView):
     def get(self, request, project_id):
         return Response(project_snapshot(project_for_user(request.user, project_id), request.user, detailed=True))
+
+
+class ProjectMemberRoleView(ProjectApiView):
+    serializer_class = ProjectMemberRoleSerializer
+
+    def put(self, request, project_id, worker_id):
+        serializer = ProjectMemberRoleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        participants = set_project_member_role(
+            request.user, project_id, worker_id, serializer.validated_data["role"]
+        )
+        return Response(participants)
 
 
 class ProjectChartsView(ProjectApiView):
