@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.conf import settings
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.http import JsonResponse
 from django.middleware.csrf import get_token
@@ -14,11 +15,22 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.pagination import ListQuerySerializer
+from apps.workers.models import Worker
 from apps.workers.services.areas import area_summary
+from apps.workers.validators import gmail_address
 
+from .audit import record_auth_event
 from .mail import DeliveryError, send_link
 from .models import AuthToken, RecoveryRequest, User
-from .security import IsAdministrator, check_throttle, clear_throttle, record_failure, role_annotation
+from .security import (
+    IsAdministrator,
+    check_throttle,
+    clear_throttle,
+    consume_send_quota,
+    record_failure,
+    role_annotation,
+    unlock_account,
+)
 from .serializers import (
     AccountListQuerySerializer,
     EmailSerializer,
@@ -94,7 +106,7 @@ class LoginView(APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"]
         password = serializer.validated_data["password"]
-        check_throttle(request, email, "login")
+        check_throttle(email, "login")
         with transaction.atomic():
             try:
                 user = (
@@ -106,9 +118,9 @@ class LoginView(APIView):
             except (User.DoesNotExist, User.MultipleObjectsReturned):
                 user = None
             if not user or not eligible(user) or not user.check_password(password):
-                record_failure(request, email, "login")
+                record_failure(email, "login")
                 return Response({"detail": "Credenciales no válidas"}, status=status.HTTP_401_UNAUTHORIZED)
-            clear_throttle(request, email, "login")
+            clear_throttle(email, "login")
             expires_at = next_monday_lima()
             AuthToken.objects.filter(user=user, purpose__in=["access", "refresh"], consumed_at__isnull=True).update(
                 consumed_at=timezone.now()
@@ -176,7 +188,13 @@ class MeView(APIView):
         if "last_names" in data:
             worker.last_names = str(data.get("last_names") or "").strip()
         if "email" in data:
-            worker.email = str(data.get("email") or "").strip()
+            try:
+                email = gmail_address(data.get("email"))
+            except DjangoValidationError as error:
+                raise ValidationError({"email": error.messages[0]}) from None
+            if Worker.objects.filter(email__iexact=email).exclude(pk=worker.pk).exists():
+                raise ValidationError({"email": "El correo ya está registrado por otra cuenta. Usa otro correo e intenta de nuevo."})
+            worker.email = email
         worker.save()
         password = data.get("password")
         if password:
@@ -194,8 +212,7 @@ class RecoveryRequestView(APIView):
         serializer = EmailSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"]
-        check_throttle(request, email, "recovery")
-        record_failure(request, email, "recovery")
+        consume_send_quota("recovery", email)
         with transaction.atomic():
             user = (
                 User.objects.select_related("worker", "worker__area")
@@ -209,6 +226,7 @@ class RecoveryRequestView(APIView):
                 and not RecoveryRequest.objects.filter(user=user, resolved_at__isnull=True).exists()
             ):
                 RecoveryRequest.objects.create(user=user)
+                record_auth_event("recovery_requested", account_id=user.pk)
         return Response({"detail": "Si la cuenta existe, la solicitud será revisada por un administrador"})
 
 
@@ -295,6 +313,25 @@ class AdminResendInvitationView(APIView):
         return Response(deliver_invitation(account_id, request.user))
 
 
+class AdminUnlockView(APIView):
+    permission_classes = [IsAdministrator]
+
+    def post(self, request, account_id):
+        user = User.objects.select_related("worker").filter(pk=account_id).first()
+        if user is None:
+            return Response(
+                {"detail": "La cuenta no existe o fue eliminada. Actualiza la lista e intenta de nuevo."},
+                status=404,
+            )
+        unlock_account(user.worker.email)
+        record_auth_event(
+            "account_unlocked",
+            actor_id=request.user.pk,
+            account_id=user.pk,
+        )
+        return Response({"detail": "Cuenta desbloqueada. El usuario ya puede intentar iniciar sesión de nuevo."})
+
+
 class AdminRecoveryRequestsView(APIView):
     permission_classes = [IsAdministrator]
 
@@ -317,13 +354,24 @@ class AdminIssueResetView(APIView):
             )
             if not entry or not eligible(entry.user):
                 return Response({"detail": "Solicitud no disponible"}, status=404)
-            expires_at = timezone.now() + timedelta(minutes=settings.AUTH_RESET_MINUTES)
+            consume_send_quota("reset", entry.user_id)
+            expires_at = timezone.now() + timedelta(hours=settings.AUTH_LINK_HOURS)
             token = issue_stored(entry.user, "reset", expires_at, revoke_previous=True)
             try:
                 send_link(entry.user.worker.email, entry.user.worker.first_names, "reset", token)
             except DeliveryError:
+                record_auth_event(
+                    "recovery_reset_failed",
+                    actor_id=request.user.pk,
+                    account_id=entry.user_id,
+                )
                 raise ValidationError({"detail": "No se pudo enviar el enlace"}) from None
             entry.resolved_at = timezone.now()
             entry.resolved_by = request.user
             entry.save(update_fields=["resolved_at", "resolved_by"])
+        record_auth_event(
+            "recovery_reset_issued",
+            actor_id=request.user.pk,
+            account_id=entry.user_id,
+        )
         return Response({"detail": "Enlace de restablecimiento enviado"})

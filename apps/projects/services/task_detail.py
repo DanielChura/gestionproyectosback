@@ -41,11 +41,8 @@ def relation_candidates(user, project_id, task_id, query):
     text = query.get("q", "").strip()
     if kind not in ("blocks", "blocked_by", "custom") or len(text) > 100:
         raise ValidationError({"detail": "Búsqueda no válida"})
-    if kind != "custom" and task.parent_id:
-        raise ValidationError({"detail": "Las dependencias solo admiten tareas principales"})
     tasks = tasks_for_user(user, project).exclude(pk=task.pk)
     if kind != "custom":
-        tasks = tasks.filter(parent_id=None)
         edges = list(TaskDependency.objects.filter(project=project).values_list("predecessor_id", "successor_id"))
         graph = {}
         for predecessor, successor in edges:
@@ -83,7 +80,7 @@ def relation_page(user, project_id, task_id, cursor=0):
             target = edge.successor if edge.predecessor_id == task.pk else edge.predecessor
             items.append({"id": f"dep:{edge.predecessor_id}:{edge.successor_id}", "kind": "blocks" if edge.predecessor_id == task.pk else "blocked_by",
                           "name": "", "target_id": target.pk, "target_name": target.name,
-                          "predecessor_id": edge.predecessor_id, "successor_id": edge.successor_id})
+                          "predecessor_id": edge.predecessor_id, "successor_id": edge.successor_id, "dependency_type": edge.dependency_type, "legacy": edge.dependency_type is None})
     remaining = 31 - len(items)
     if remaining > 0:
         start = max(0, cursor - dependency_count)

@@ -94,7 +94,7 @@ class AuthenticationFlowTests(unittest.TestCase):
     def login(self, email, password="StrongPassword!2026"):
         return self.post("/api/auth/login/", {"email": email, "password": password})
 
-    def invite_data(self, email="new@example.com", **changes):
+    def invite_data(self, email="new@gmail.com", **changes):
         return {
             "first_names": "Nombre Sintético",
             "last_names": "Apellido Prueba",
@@ -155,11 +155,11 @@ class AuthenticationFlowTests(unittest.TestCase):
     @patch("apps.authentication.services.accounts.send_link", return_value="synthetic-invite-id")
     def test_admin_invitation_activation_and_reset(self, send_link, reset_mail):
         admin_access = self.admin_access()
-        invited = self.post("/api/auth/admin/invitations/", self.invite_data("t04@example.com"), admin_access)
+        invited = self.post("/api/auth/admin/invitations/", self.invite_data("t04@gmail.com"), admin_access)
         self.assertEqual(invited.status_code, 201)
-        worker = Worker.objects.get(email="t04@example.com")
+        worker = Worker.objects.get(email="t04@gmail.com")
         account = User.objects.get(worker=worker)
-        self.assertEqual(account.username, "t04@example.com")
+        self.assertEqual(account.username, "t04@gmail.com")
         self.assertFalse(account.is_active)
         first_token = send_link.call_args.args[3]
         self.assertEqual(
@@ -203,10 +203,10 @@ class AuthenticationFlowTests(unittest.TestCase):
             ).status_code,
             400,
         )
-        self.assertEqual(self.login("t04@example.com").status_code, 200)
+        self.assertEqual(self.login("t04@gmail.com").status_code, 200)
         worker_refresh = self.client.cookies["gm_refresh"].value
         unknown = self.post("/api/auth/recovery-requests/", {"email": "unknown@example.com"})
-        known = self.post("/api/auth/recovery-requests/", {"email": "t04@example.com"})
+        known = self.post("/api/auth/recovery-requests/", {"email": "t04@gmail.com"})
         self.assertEqual(unknown.status_code, 200)
         self.assertEqual(unknown.json(), known.json())
         pending = RecoveryRequest.objects.get(user=account)
@@ -227,8 +227,8 @@ class AuthenticationFlowTests(unittest.TestCase):
         )
         self.client.cookies["gm_refresh"] = worker_refresh
         self.assertEqual(self.post("/api/auth/refresh/").status_code, 401)
-        self.assertEqual(self.login("t04@example.com", "StrongPassword!2026").status_code, 401)
-        self.assertEqual(self.login("t04@example.com", "OtherStrong!2026").status_code, 200)
+        self.assertEqual(self.login("t04@gmail.com", "StrongPassword!2026").status_code, 401)
+        self.assertEqual(self.login("t04@gmail.com", "OtherStrong!2026").status_code, 200)
 
     @patch("apps.authentication.services.accounts.send_link", return_value="synthetic-message-id")
     def test_specific_areas_registration_and_readonly_activation(self, send_link):
@@ -249,11 +249,11 @@ class AuthenticationFlowTests(unittest.TestCase):
         token = send_link.call_args.args[3]
         preview = self.post("/api/auth/activate/preview/", {"token": token})
         self.assertEqual(preview.status_code, 200)
-        self.assertEqual(preview.json()["email"], "new@example.com")
+        self.assertEqual(preview.json()["email"], "new@gmail.com")
         self.assertEqual(preview.json()["role"], "TRABAJADOR")
         self.assertEqual(len(preview.json()["areas"]), 2)
         for field, value in (
-            ("email", "changed@example.com"),
+            ("email", "changed@gmail.com"),
             ("role", "ADMINISTRADOR"),
             ("area_ids", []),
             ("first_names", "Changed"),
@@ -305,6 +305,7 @@ class AuthenticationFlowTests(unittest.TestCase):
             {"first_names": " "},
             {"last_names": " "},
             {"email": "bad"},
+            {"email": "new@example.com"},
             {"worker_id": 999},
         ]
         for changes in invalid:
@@ -325,13 +326,13 @@ class AuthenticationFlowTests(unittest.TestCase):
         self.assertEqual(WorkerArea.objects.count(), 0)
 
     @patch("apps.authentication.services.accounts.send_link", return_value="synthetic-message-id")
-    def test_long_email_is_preserved_and_duplicates_are_rejected(self, send_link):
+    def test_max_length_gmail_is_preserved_and_duplicates_are_rejected(self, send_link):
         access = self.admin_access()
-        email = "a" * 60 + "@" + "b" * 50 + ".example.com"
+        email = "a" * 64 + "@gmail.com"
         response = self.post("/api/auth/admin/invitations/", self.invite_data(email), access)
         self.assertEqual(response.status_code, 201)
         worker = Worker.objects.get(email=email)
-        self.assertNotEqual(worker.user.username, email[:80])
+        self.assertEqual(worker.user.username, email)
         self.assertEqual(
             self.post("/api/auth/admin/invitations/", self.invite_data(email.upper()), access).status_code, 400
         )
@@ -346,7 +347,7 @@ class AuthenticationFlowTests(unittest.TestCase):
         access = self.admin_access()
         self.post("/api/auth/admin/invitations/", self.invite_data(), access)
         token = send_link.call_args.args[3]
-        invalid_passwords = ["short", "password123456", "new@example.com", "Nombre Sintético"]
+        invalid_passwords = ["short", "password123456", "new@gmail.com", "Nombre Sintético"]
         for password in invalid_passwords:
             self.assertEqual(
                 self.post("/api/auth/activate/validate-password/", self.password_data(token, password)).status_code, 400
@@ -358,7 +359,7 @@ class AuthenticationFlowTests(unittest.TestCase):
             ).status_code,
             400,
         )
-        Worker.objects.filter(email="new@example.com").update(email="changed@example.com")
+        Worker.objects.filter(email="new@gmail.com").update(email="changed@gmail.com")
         self.assertEqual(self.post("/api/auth/activate/preview/", {"token": token}).status_code, 400)
         self.assertEqual(self.post("/api/auth/activate/", self.password_data(token)).status_code, 400)
 
@@ -369,7 +370,7 @@ class AuthenticationFlowTests(unittest.TestCase):
         token = send_link.call_args.args[3]
         AuthToken.objects.filter(digest=digest_token(token)).update(expires_at=timezone.now() - timedelta(seconds=1))
         self.assertEqual(self.post("/api/auth/activate/", self.password_data(token)).status_code, 400)
-        user = User.objects.get(worker__email="new@example.com")
+        user = User.objects.get(worker__email="new@gmail.com")
         self.post(f"/api/auth/admin/accounts/{user.pk}/resend-invitation/", bearer=access)
         token = send_link.call_args.args[3]
         Worker.objects.filter(pk=user.worker_id).update(active=False)
@@ -381,7 +382,7 @@ class AuthenticationFlowTests(unittest.TestCase):
         send_link.side_effect = DeliveryError("synthetic rejection")
         response = self.post("/api/auth/admin/invitations/", self.invite_data(), access)
         self.assertEqual(response.status_code, 503)
-        user = User.objects.get(worker__email="new@example.com")
+        user = User.objects.get(worker__email="new@gmail.com")
         self.assertFalse(user.is_active)
         self.assertEqual(user.invitation.delivery_status, "failed")
         first_token = send_link.call_args.args[3]
@@ -405,7 +406,7 @@ class AuthenticationFlowTests(unittest.TestCase):
         self.assertEqual(self.post("/api/auth/activate/preview/", {"token": uncertain_token}).status_code, 400)
         self.assertEqual(
             self.post(
-                f"/api/auth/admin/accounts/{user.pk}/resend-invitation/", {"email": "changed@example.com"}, access
+                f"/api/auth/admin/accounts/{user.pk}/resend-invitation/", {"email": "changed@gmail.com"}, access
             ).status_code,
             400,
         )
@@ -442,12 +443,26 @@ class AuthenticationFlowTests(unittest.TestCase):
         self.assertTrue(response.json()["user"]["permissions"]["supervise_projects"])
         self.assertEqual(admin.global_role, "ADMINISTRADOR")
 
-    def test_login_attempts_are_limited(self):
-        self.account("WORK", "worker@example.com", "TRABAJADOR")
+    def test_login_attempts_are_limited_and_admin_unlocks_account(self):
+        user = self.account("WORK", "worker@example.com", "TRABAJADOR")
         for _ in range(5):
             self.assertEqual(self.login("worker@example.com", "wrong").status_code, 401)
         self.assertEqual(self.login("worker@example.com").status_code, 429)
         self.assertIn("Demasiados intentos", self.login("worker@example.com").json()["detail"])
+        self.assertGreaterEqual(AuthThrottle.objects.get().blocked_until - timezone.now(), timedelta(hours=23))
+        access = self.admin_access()
+        self.assertEqual(
+            self.post(f"/api/auth/admin/accounts/{user.pk}/unlock/", bearer=access).status_code, 200
+        )
+        self.assertEqual(self.login("worker@example.com").status_code, 200)
+
+    def test_daily_recovery_send_quota_is_limited(self):
+        payload = {"email": "quota@gmail.com"}
+        for _ in range(5):
+            self.assertEqual(self.post("/api/auth/recovery-requests/", payload).status_code, 200)
+        limited = self.post("/api/auth/recovery-requests/", payload)
+        self.assertEqual(limited.status_code, 429)
+        self.assertIn("límite de 5 envíos", limited.json()["detail"])
 
     def test_explicit_relationships_are_authoritative_over_legacy_primary_area(self):
         user = self.account("WORK", "worker@example.com", "TRABAJADOR")

@@ -122,6 +122,11 @@ class Task(models.Model):
     start_date = models.DateField(db_column="fecha_inicio")
     due_date = models.DateField(null=True, db_column="fecha_fin")
     calendar_revision = models.PositiveBigIntegerField(default=1, db_column="calendario_revision")
+    calendar_precision = models.CharField(max_length=4, default="day", db_column="precision_calendario")
+    start_time = models.TimeField(null=True, db_column="hora_inicio_planificada")
+    due_time = models.TimeField(null=True, db_column="hora_fin_planificada")
+    actual_started_at = models.DateTimeField(null=True, db_column="inicio_real_en")
+    actual_finished_at = models.DateTimeField(null=True, db_column="fin_real_en")
     estimated_minutes = models.PositiveIntegerField(null=True, blank=True, db_column="duracion_estimada_minutos")
     progress = models.DecimalField(max_digits=5, decimal_places=2, default=0, db_column="avance")
     reason = models.CharField(max_length=500, null=True, db_column="motivo_cambio")
@@ -185,6 +190,7 @@ class TaskActivity(models.Model):
 
 
 class TaskDependency(models.Model):
+    dependency_type = models.CharField(max_length=2, null=True, db_column="tipo")
     pk = models.CompositePrimaryKey("project_id", "predecessor_id", "successor_id")
     project = models.ForeignKey(Project, on_delete=models.DO_NOTHING, db_column="proyecto_id")
     predecessor = models.ForeignKey(

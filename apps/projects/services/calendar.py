@@ -9,7 +9,7 @@ from rest_framework.exceptions import APIException, ValidationError
 from ..models import TaskCalendarIntent
 
 
-CALENDAR_FIELDS = {"start_date", "due_date"}
+CALENDAR_FIELDS = {"start_date", "due_date", "schedule"}
 PRECONDITIONS = {"expected_calendar_revision", "calendar_intent_id"}
 INTENT_LIFETIME = timedelta(days=7)
 

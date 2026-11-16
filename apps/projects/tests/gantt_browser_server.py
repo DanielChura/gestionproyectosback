@@ -91,6 +91,14 @@ def prepare(fixture, credentials):
             from .gantt_content_fixture import prepare_content
             prepare_content(fixture, credentials)
 
+    if os.environ.get("GM_GANTT_TIMELINE") == "1":
+        from .gantt_timeline_fixture import prepare_timeline
+        prepare_timeline(fixture, credentials)
+
+    if os.environ.get("GM_GANTT_HIERARCHY") == "1":
+        from .gantt_hierarchy_fixture import prepare_hierarchy
+        prepare_hierarchy(fixture, credentials)
+
     Path(os.environ["GM_BROWSER_REPORT_DIR"], "baseline_domain.json").write_text(
         json.dumps(domain_snapshot(), indent=2), encoding="utf-8",
     )
@@ -105,6 +113,10 @@ if __name__ == "__main__":
         import django
         django.setup()
         target = Path(os.environ["GM_BROWSER_REPORT_DIR"])
+        if os.environ.get("GM_GANTT_HIERARCHY") == "1":
+            from .gantt_hierarchy_fixture import verify_hierarchy
+            verify_hierarchy()
+            raise SystemExit(0)
         if os.environ.get("GM_GANTT_STAGE") == "3":
             from .gantt_calendar_fixture import verify_calendar_gestures
             verify_calendar_gestures()

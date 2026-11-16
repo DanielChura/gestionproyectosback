@@ -21,6 +21,11 @@ def activity_values(task):
     return {
         "name": task.name, "state_code": state, "priority": task.priority,
         "start_date": task.start_date.isoformat(), "due_date": task.due_date.isoformat() if task.due_date else None,
+        "calendar_precision": task.calendar_precision,
+        "start_time": task.start_time.isoformat() if task.start_time else None,
+        "due_time": task.due_time.isoformat() if task.due_time else None,
+        "actual_started_at": task.actual_started_at.isoformat() if task.actual_started_at else None,
+        "actual_finished_at": task.actual_finished_at.isoformat() if task.actual_finished_at else None,
         "estimated_minutes": task.estimated_minutes,
         "responsibles": list(Worker.objects.filter(pk__in=task_assignee_ids(task)).order_by("pk").values("id", "first_names", "last_names")),
         "labels": labels,

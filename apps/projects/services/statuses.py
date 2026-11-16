@@ -168,7 +168,13 @@ def reassign_tasks(project, previous, states, mapping):
             continue
         tasks = Task.objects.filter(project=project, state_code=source)
         ids = list(tasks.values_list("pk", flat=True)) if connection.vendor != "mysql" or source == target else []
-        tasks.update(state_code=target, updated_at=timezone.now())
+        from .scheduling import prepare_state_change
+        for task in tasks:
+            candidate = prepare_state_change(project, task, target)
+            Task.objects.filter(pk=task.pk).update(
+                state_code=target, updated_at=timezone.now(),
+                actual_started_at=candidate.actual_started_at, actual_finished_at=candidate.actual_finished_at,
+            )
         for task_id in ids:
             record_activity(Task(pk=task_id, project_id=project.pk), "changed", field="state_code", old=old[source], new=current[target])
 

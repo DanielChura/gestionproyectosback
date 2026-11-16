@@ -3,6 +3,7 @@ from django.db.models import Q
 
 from ..models import ProjectMember, TaskAssignee, TaskDependency, TaskLabel
 from .statuses import configured_states
+from .scheduling import dependency_contract, schedule_value
 
 
 def task_snapshots(tasks, project, user, *, with_order=True):
@@ -26,9 +27,25 @@ def task_snapshots(tasks, project, user, *, with_order=True):
         )
     )
     member = membership is not None
-    can_create = not terminal and (
+    supervises = bool(
         admin
-        or (user.global_role == "TRABAJADOR" and project.worker_create and member and membership["worker__active"])
+        or (
+            member
+            and membership["worker__active"]
+            and membership["project_role"] in ("RESPONSABLE", "REVISOR")
+        )
+    )
+    can_create = bool(
+        not terminal
+        and (
+            admin
+            or (
+                user.global_role == "TRABAJADOR"
+                and (project.worker_create or supervises)
+                and member
+                and membership["worker__active"]
+            )
+        )
     )
     definitions = configured_states(project)
     states = {state["code"]: state["name"] for state in definitions}
@@ -63,19 +80,23 @@ def task_snapshots(tasks, project, user, *, with_order=True):
             | Q(predecessor_id__in=TaskAssignee.objects.filter(worker_id=user.worker_id).values("task_id"))
         )
     dependencies_by_task = defaultdict(list)
-    for successor_id, predecessor_id in dependencies.values_list("successor_id", "predecessor_id"):
-        dependencies_by_task[successor_id].append(predecessor_id)
+    links_by_task = defaultdict(list)
+    for edge in dependencies:
+        dependencies_by_task[edge.successor_id].append(edge.predecessor_id)
+        links_by_task[edge.successor_id].append(dependency_contract(edge))
     snapshots = [
         task_snapshot_from_context(
             task, user, states, labels[task.pk], dependencies_by_task[task.pk],
             transitions_by_state[task.state_code], admin=admin, terminal=terminal, manageable=manageable,
-            member=member, worker_edit=project.worker_edit, worker_state=project.worker_state, can_create=can_create,
+            member=member, supervises=supervises,
+            worker_edit=project.worker_edit, worker_state=project.worker_state, can_create=can_create,
             assignees=list(sorted(assignees[task.pk].values(), key=lambda worker: worker["id"])),
             metadata=metadata.get(task.state_code, {}),
         )
         for task in tasks
     ]
     for snapshot in snapshots:
+        snapshot["dependency_links"] = links_by_task[snapshot["id"]]
         snapshot["move_revision"] = move_revision
         snapshot["manual_position"] = str(positions[snapshot["id"]]) if snapshot["id"] in positions else None
         snapshot["move_targets"] = (
@@ -88,11 +109,11 @@ def task_snapshots(tasks, project, user, *, with_order=True):
 
 def task_snapshot_from_context(
     task, user, states, labels, dependencies, transitions, *, admin, terminal, manageable,
-    member, worker_edit, worker_state, can_create, assignees, metadata,
+    member, supervises, worker_edit, worker_state, can_create, assignees, metadata,
 ):
     assigned = any(worker["id"] == user.worker_id for worker in assignees)
-    can_edit = not terminal and (admin or (assigned and member and worker_edit))
-    can_state = not terminal and (admin or (assigned and member and worker_state))
+    can_edit = not terminal and (supervises or (assigned and member and worker_edit))
+    can_state = not terminal and (supervises or (assigned and member and worker_state))
     return {
         "id": task.pk,
         "parent_id": task.parent_id,
@@ -109,6 +130,8 @@ def task_snapshot_from_context(
         "start_date": task.start_date,
         "due_date": task.due_date,
         "calendar_revision": str(task.calendar_revision),
+        "schedule": schedule_value(task),
+        "execution": {"started_at": task.actual_started_at, "finished_at": task.actual_finished_at, "historical_unknown": task.actual_started_at is None and metadata.get("category") != "not_started" and task.state_code not in ("PENDIENTE", "BLOQUEADA", "CANCELADA")},
         "estimated_minutes": task.estimated_minutes,
         "responsible_id": task.responsible_id,
         "responsible_name": f"{task.responsible.first_names} {task.responsible.last_names}"
@@ -121,9 +144,9 @@ def task_snapshot_from_context(
         "permissions": {
             "edit": can_edit,
             "state": can_state,
-            "assign": manageable,
-            "create_child": can_create and (admin or assigned) and metadata.get("category") not in ("done", "closed"),
-            "dependencies": manageable and not task.parent_id,
+            "assign": not terminal and supervises,
+            "create_child": can_create and (supervises or assigned) and metadata.get("category") not in ("done", "closed"),
+            "dependencies": manageable,
             "relations": manageable,
         },
     }

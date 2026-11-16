@@ -1,5 +1,5 @@
 from django.db import transaction
-from django.db.models import Count, Exists, OuterRef, Q
+from django.db.models import Count, Exists, F, OuterRef, Q
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
@@ -34,6 +34,21 @@ def _base_queryset():
     )
 
 
+def _auto_close_publications():
+    today = timezone.localdate()
+    expired = ProjectPublication.objects.filter(
+        state=PublicationState.OPEN, closing_date__lt=today
+    ).values_list("pk", flat=True)
+    full = _base_queryset().filter(
+        state=PublicationState.OPEN, occupied__gte=F("vacancies")
+    ).values_list("pk", flat=True)
+    ids = {*expired, *full}
+    if ids:
+        ProjectPublication.objects.filter(
+            pk__in=ids, state=PublicationState.OPEN
+        ).update(state=PublicationState.CLOSED)
+
+
 def publication_queryset(user):
     queryset = _base_queryset()
     if user.global_role == "ADMINISTRADOR":
@@ -41,17 +56,33 @@ def publication_queryset(user):
     if user.global_role != "TRABAJADOR":
         raise PermissionDenied("Cuenta no autorizada")
     today = timezone.localdate()
-    return queryset.annotate(applied=Exists(PublicationAssignment.objects.filter(
-        publication_id=OuterRef("pk"), worker_id=user.worker_id, cancelled=False,
-    ))).filter(
+    return queryset.annotate(
+        applied=Exists(
+            PublicationAssignment.objects.filter(
+                publication_id=OuterRef("pk"),
+                worker_id=user.worker_id,
+                cancelled=False,
+            )
+        ),
+        project_member=Exists(
+            ProjectMember.objects.filter(
+                project_id=OuterRef("project_id"),
+                worker_id=user.worker_id,
+                active=True,
+            )
+        ),
+    ).filter(
         project_id__in=visible_projects(user).values("pk"),
         state=PublicationState.OPEN,
         opening_date__lte=today,
         closing_date__gte=today,
+        occupied__lt=F("vacancies"),
     )
 
 
 def publication_for_user(user, publication_id):
+    if user.global_role == "ADMINISTRADOR":
+        _auto_close_publications()
     publication = publication_queryset(user).filter(pk=publication_id).first()
     if publication is None:
         raise NotFound("Publicación no disponible")
@@ -59,6 +90,8 @@ def publication_for_user(user, publication_id):
 
 
 def list_publications(user, params):
+    if user.global_role == "ADMINISTRADOR":
+        _auto_close_publications()
     queryset = publication_queryset(user)
     project_id = params.get("project_id", "").strip()
     if project_id:
@@ -110,10 +143,16 @@ def publication_snapshot(publication, user):
     if not project_open:
         allowed_states.discard(PublicationState.OPEN)
     applied = getattr(publication, "applied", None)
-    if applied is None and user.global_role == "TRABAJADOR":
-        applied = PublicationAssignment.objects.filter(
-            publication_id=publication.pk, worker_id=user.worker_id, cancelled=False,
-        ).exists()
+    project_member = getattr(publication, "project_member", False)
+    if user.global_role == "TRABAJADOR":
+        if applied is None:
+            applied = PublicationAssignment.objects.filter(
+                publication_id=publication.pk, worker_id=user.worker_id, cancelled=False,
+            ).exists()
+        if not project_member:
+            project_member = ProjectMember.objects.filter(
+                project=project, worker_id=user.worker_id, active=True
+            ).exists()
     return {
         "id": publication.pk,
         "project": {"id": project.pk, "code": project.code, "name": project.name},
@@ -143,6 +182,8 @@ def publication_snapshot(publication, user):
         "can_apply": (
             user.global_role == "TRABAJADOR"
             and publication.state == PublicationState.OPEN
+            and not applied
+            and not project_member
             and max(publication.vacancies - _occupied_count(publication), 0) > 0
         ),
     }
@@ -298,42 +339,90 @@ def apply_publication(user, publication_id):
     worker = getattr(user, "worker", None)
     if worker is None:
         raise PermissionDenied("Cuenta no autorizada")
-    publication = publication_for_user(user, publication_id)
+    if not ProjectPublication.objects.filter(
+        pk=publication_id, project_id__in=visible_projects(user).values("pk")
+    ).exists():
+        raise NotFound("Publicación no disponible")
 
-    existing = PublicationAssignment.objects.filter(
-        publication=publication, worker=worker, cancelled=False
-    ).exists()
-    if existing:
-        raise ValidationError({"detail": "Ya te has postulado a esta publicacion"})
-
-    worker_specialties = {
-        item.specialty_id: item.level for item in worker.worker_specialties.all()
-    }
-    for requirement in publication.requirements.all():
-        if worker_specialties.get(requirement.specialty_id, 0) < requirement.minimum_level:
-            raise ValidationError({"detail": "No cumples los requisitos de la publicacion"})
-
-    from django.db import connection
-
-    with connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT horas_disponibles FROM v_disponibilidad_actual WHERE trabajador_id = %s",
-            [worker.pk],
-        )
-        row = cursor.fetchone()
-    available_hours = row[0] if row else 0
-    if available_hours < publication.weekly_hours:
-        raise ValidationError({"detail": "No tienes horas disponibles suficientes"})
-
-    occupied = _occupied_count(publication)
-    if occupied >= publication.vacancies:
-        raise ValidationError({"detail": "No quedan vacantes disponibles"})
-
+    today = timezone.localdate()
     with audit_actor(user), transaction.atomic():
-        member = ProjectMember.objects.filter(project=publication.project, worker=worker).first()
+        publication = (
+            ProjectPublication.objects.select_for_update()
+            .select_related("project")
+            .prefetch_related("requirements")
+            .filter(pk=publication_id)
+            .first()
+        )
+        if publication is None:
+            raise NotFound("Publicación no disponible")
+        if publication.state != PublicationState.OPEN:
+            raise ValidationError({"detail": "La convocatoria ya está cerrada."})
+        if not (publication.opening_date <= today <= publication.closing_date):
+            raise ValidationError({"detail": "La convocatoria no está vigente."})
+        if ProjectMember.objects.filter(
+            project=publication.project, worker=worker, active=True
+        ).exists():
+            raise ValidationError(
+                {"detail": "Ya eres integrante activo de este proyecto."}
+            )
+
+        existing = PublicationAssignment.objects.filter(
+            publication=publication, worker=worker, cancelled=False
+        ).exists()
+        if existing:
+            raise ValidationError(
+                {"detail": "Ya te has postulado a esta publicación."}
+            )
+
+        worker_specialties = {
+            item.specialty_id: item.level
+            for item in worker.worker_specialties.all()
+        }
+        for requirement in publication.requirements.all():
+            if (
+                worker_specialties.get(requirement.specialty_id, 0)
+                < requirement.minimum_level
+            ):
+                raise ValidationError(
+                    {"detail": "No cumples los requisitos de la publicación."}
+                )
+
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT horas_disponibles FROM v_disponibilidad_actual WHERE trabajador_id = %s",
+                [worker.pk],
+            )
+            row = cursor.fetchone()
+        available_hours = row[0] if row else 0
+        if available_hours < publication.weekly_hours:
+            raise ValidationError(
+                {"detail": "No tienes horas disponibles suficientes."}
+            )
+
+        occupied = (
+            PublicationAssignment.objects.filter(
+                publication=publication, cancelled=False
+            )
+            .values("worker_id")
+            .distinct()
+            .count()
+        )
+        if occupied >= publication.vacancies:
+            raise ValidationError(
+                {"detail": "No quedan vacantes disponibles para esta publicación."}
+            )
+
+        member = ProjectMember.objects.filter(
+            project=publication.project, worker=worker
+        ).first()
         if member is None:
             ProjectMember.objects.create(
-                project=publication.project, worker=worker, active=True, project_role="COLABORADOR"
+                project=publication.project,
+                worker=worker,
+                active=True,
+                project_role="COLABORADOR",
             )
         elif not member.active:
             member.active = True
@@ -347,4 +436,7 @@ def apply_publication(user, publication_id):
             weekly_hours=publication.weekly_hours,
             cancelled=False,
         )
+        if occupied + 1 >= publication.vacancies:
+            publication.state = PublicationState.CLOSED
+            publication.save(update_fields=["state"])
     return _reload(publication.pk)

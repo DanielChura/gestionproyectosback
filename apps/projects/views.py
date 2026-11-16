@@ -16,6 +16,7 @@ from .serializers import (
     ProjectFavoriteSerializer,
     ProjectMetricsQuerySerializer,
     ProjectMetricsResponseSerializer,
+    ProjectMemberRoleSerializer,
     ProjectTaskConfigurationSerializer,
     TaskCreateSerializer,
     TaskEditSerializer,
@@ -26,10 +27,11 @@ from .serializers import (
 )
 from .services.access import project_for_user, require_admin, tasks_for_user
 from .services.charts import project_chart_data
+from .services.dependency_undo import issue_undo
 from .services.favorites import set_project_favorite
 from .services.listings import project_area_page, project_page
 from .services.presentation import task_snapshot, task_snapshots
-from .services.projects import create_project, project_snapshot, worker_candidates
+from .services.projects import add_project_participants, create_project, project_snapshot, set_project_member_role, worker_candidates
 from .services.tasks import change_task_state, create_task, edit_task, manage_dependency
 from .services.statuses import catalog_states, configure_task_states, status_configuration
 from .services.state_templates import project_templates, save_template
@@ -111,6 +113,24 @@ class ProjectListView(ProjectApiView):
 class ProjectDetailView(ProjectApiView):
     def get(self, request, project_id):
         return Response(project_snapshot(project_for_user(request.user, project_id), request.user, detailed=True))
+
+
+class ProjectMemberRoleView(ProjectApiView):
+    serializer_class = ProjectMemberRoleSerializer
+
+    def put(self, request, project_id, worker_id):
+        serializer = ProjectMemberRoleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        participants = set_project_member_role(
+            request.user, project_id, worker_id, serializer.validated_data["role"]
+        )
+        return Response(participants)
+
+
+class ProjectMembersView(ProjectApiView):
+    def post(self, request, project_id):
+        return Response(add_project_participants(request.user, project_id, request.data))
+
 
 
 class ProjectChartsView(ProjectApiView):
@@ -248,16 +268,28 @@ class TaskDependenciesView(ProjectApiView):
     serializer_class = DependencySerializer
 
     def post(self, request, project_id, task_id):
-        serializer = DependencySerializer(data=request.data)
+        serializer = DependencySerializer(data=request.data, context={"method": request.method})
         serializer.is_valid(raise_exception=True)
-        manage_dependency(request.user, project_id, task_id, serializer.validated_data["predecessor_id"])
+        manage_dependency(request.user, project_id, task_id, serializer.validated_data["predecessor_id"], dependency_type=serializer.validated_data.get("dependency_type"), undo_token=serializer.validated_data.get("undo_token"))
         return Response({"detail": "Dependencia agregada"}, status=201)
 
-    def delete(self, request, project_id, task_id):
-        serializer = DependencySerializer(data=request.data)
+    def patch(self, request, project_id, task_id):
+        serializer = DependencySerializer(data=request.data, context={"method": request.method})
         serializer.is_valid(raise_exception=True)
-        manage_dependency(request.user, project_id, task_id, serializer.validated_data["predecessor_id"], remove=True)
-        return Response(status=204)
+        data = serializer.validated_data
+        manage_dependency(request.user, project_id, task_id, data["predecessor_id"],
+                          dependency_type=data["dependency_type"], replace=True, expected_type=data["expected_type"])
+        return Response({"detail": "Tipo de dependencia actualizado"})
+
+    def delete(self, request, project_id, task_id):
+        serializer = DependencySerializer(data=request.data, context={"method": request.method})
+        serializer.is_valid(raise_exception=True)
+        kind = manage_dependency(request.user, project_id, task_id, serializer.validated_data["predecessor_id"], remove=True)
+        token, expires = issue_undo(request.user, project_id, serializer.validated_data["predecessor_id"], task_id, kind)
+        return Response(status=204, headers={
+            "X-GM-Dependency-Undo": token, "X-GM-Dependency-Undo-Expires": str(expires),
+            "Access-Control-Expose-Headers": "X-GM-Dependency-Undo, X-GM-Dependency-Undo-Expires",
+        })
 
 
 class TaskActivityView(ProjectApiView):

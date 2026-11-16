@@ -9,7 +9,8 @@ from rest_framework.exceptions import APIException, ValidationError
 from ..models import Task, TaskOrder
 from .access import project_for_user, require_task_permission, task_for_user, tasks_for_user
 from .audit import audit_actor, record_activity
-from .tasks import apply_state_change, editable_project, validate_transition
+from .tasks import apply_state_change, editable_project, validate_dates, validate_transition
+from .state_categories import state_rule
 from .statuses import configured_states
 
 
@@ -48,25 +49,50 @@ def append_position(task):
     TaskOrder.objects.create(task=task, position=maximum + 1024)
 
 
+def hierarchy_parent(user, project, task, parent_id):
+    if (task.parent_id is None) != (parent_id is None):
+        raise ValidationError({"parent_id": "Conserva la condición de tarea raíz o subtarea"})
+    if parent_id == task.parent_id:
+        return
+    parent = task_for_user(user, project, parent_id)
+    require_task_permission(user, project, parent, "worker_edit")
+    if parent.pk == task.pk or parent.parent_id is not None:
+        raise ValidationError({"parent_id": "Solo se permite trasladar la rama a otra tarea raíz"})
+    if state_rule(project, parent.state_code) in ("COMPLETADA", "CANCELADA"):
+        raise ValidationError({"parent_id": "La tarea padre está cerrada"})
+    if parent.phase_id != task.phase_id:
+        raise ValidationError({"parent_id": "El padre debe pertenecer a la misma fase"})
+    validate_dates(project, task.start_date, task.due_date, parent=parent, task=task)
+
+
 def move_task(user, project_id, task_id, data):
     from .presentation import task_snapshots
     with audit_actor(user), transaction.atomic():
         project = project_for_user(user, project_id, lock=True)
         editable_project(project)
         task = task_for_user(user, project, task_id)
-        require_task_permission(user, project, task, "worker_state")
+        hierarchical = data.get("mode") == "hierarchy"
+        require_task_permission(user, project, task, "worker_edit" if hierarchical else "worker_state")
         positions, revision = order_context(project)
         if data["expected_revision"] != revision:
             raise MoveConflict()
+        parent_id = data["parent_id"] if hierarchical else task.parent_id
+        if hierarchical:
+            if data["state_code"] != task.state_code:
+                raise ValidationError({"state_code": "El movimiento jerárquico conserva el estado"})
+            hierarchy_parent(user, project, task, parent_id)
         destination = data["state_code"]
         reason = ""
         changed = destination != task.state_code
         if changed:
             validate_transition(user, project, task, destination, reason, direct=True)
-        elif destination not in {item["code"] for item in configured_states(project)}:
+        elif not hierarchical and destination not in {item["code"] for item in configured_states(project)}:
             raise ValidationError({"state_code": "El estado no está habilitado"})
         ensure_positions(project)
-        siblings = list(Task.objects.filter(project=project, parent_id=task.parent_id, state_code=destination, archived=False).exclude(pk=task.pk).select_related("manual_order").order_by("manual_order__position", "id"))
+        siblings_query = Task.objects.filter(project=project, parent_id=parent_id, archived=False).exclude(pk=task.pk)
+        if not hierarchical:
+            siblings_query = siblings_query.filter(state_code=destination)
+        siblings = list(siblings_query.select_related("manual_order").order_by("manual_order__position", "id"))
         before = data["before_id"]
         if before is not None and not any(item.pk == before for item in siblings):
             raise ValidationError({"before_id": "La posición debe pertenecer al mismo grupo y padre"})
@@ -76,7 +102,8 @@ def move_task(user, project_id, task_id, data):
         lower = siblings[index - 1].manual_order.position if index else None
         upper = siblings[index].manual_order.position if index < len(siblings) else None
         old_position = TaskOrder.objects.get(task=task).position
-        if not changed:
+        reparented = parent_id != task.parent_id
+        if not changed and not reparented:
             old_index = sum(item.manual_order.position < old_position for item in siblings)
             if old_index == index:
                 return task_snapshots(tasks_for_user(user, project).select_related("responsible"), project, user)
@@ -91,6 +118,11 @@ def move_task(user, project_id, task_id, data):
             position = (lower + upper) / 2 if lower is not None and upper is not None else upper - 1024 if upper is not None else (lower or Decimal(0)) + 1024
         if changed:
             apply_state_change(project, task, destination, reason, nested=True, direct=True)
+        if reparented:
+            previous_parent = task.parent_id
+            task.parent_id = parent_id
+            task.save(update_fields=["parent"])
+            record_activity(task, "changed", field="parent_id", old=previous_parent, new=parent_id)
         TaskOrder.objects.filter(task=task).update(position=position)
         if old_position != position:
             record_activity(task, "changed", field="position", old=str(old_position), new=str(position))

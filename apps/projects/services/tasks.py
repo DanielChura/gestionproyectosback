@@ -3,14 +3,16 @@ from django.db import connection, models, transaction
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
-from ..models import ProjectMember, ProjectRequirement, Task, TaskDependency, TaskLabel, TaskTransition
+from ..models import ProjectRequirement, Task, TaskDependency, TaskLabel, TaskTransition
 from ..serializers import validate_labels
-from .access import project_for_user, require_admin, require_task_creation, require_task_permission, task_for_user
+from .access import project_for_user, require_admin, require_task_creation, require_task_permission, supervises_project, task_for_user
 from .audit import audit_actor, record_activity
 from .activity import activity_values, record_changes, record_state_change
 from .statuses import require_configured_state
 from .state_categories import definition_rules, state_rule
 from .assignees import primary_assignee, requested_assignees, save_assignees, validate_assignees
+from .dependency_undo import read_undo, restoring_legacy
+from .scheduling import SCHEDULE_FIELDS, calendar_candidate, execution_candidate, prepare_state_change, validate_family, validate_incident
 
 
 def editable_project(project):
@@ -72,13 +74,16 @@ def create_task(user, project_id, data):
         assignee_ids = requested_assignees(data)
         rule = state_rule(project, data["state_code"])
         if user.global_role != "ADMINISTRADOR":
-            if set(assignee_ids) - {user.worker_id}:
-                raise PermissionDenied("Solo el Administrador puede asignar tareas a otros trabajadores")
+            if not supervises_project(user, project):
+                if set(assignee_ids) - {user.worker_id}:
+                    raise PermissionDenied(
+                        "Solo el Administrador o el coordinador del proyecto pueden asignar tareas a otros trabajadores"
+                    )
+                assignee_ids = [user.worker_id]
             if rule != "PENDIENTE":
                 raise ValidationError(
                     {"state_code": "Crea la tarea pendiente y usa las transiciones autorizadas para cambiar su estado"}
                 )
-            assignee_ids = [user.worker_id]
         require_configured_state(project, data["state_code"])
         parent = None
         if data["parent_id"]:
@@ -86,6 +91,9 @@ def create_task(user, project_id, data):
             if parent is None or state_rule(project, parent.state_code) in ("COMPLETADA", "CANCELADA"):
                 raise ValidationError({"parent_id": "La tarea padre no está disponible en este proyecto"})
             require_task_permission(user, project, parent, "worker_create")
+        schedule = calendar_candidate(Task(start_date=timezone.localdate(), due_date=None), data) if "schedule" in data else None
+        if schedule is not None:
+            data = {**data, "start_date": schedule.start_date, "due_date": schedule.due_date}
         today = timezone.localdate()
         start_date = data.get("start_date") or max(today, parent.start_date if parent else project.start_date or today)
         if start_date < today:
@@ -95,7 +103,10 @@ def create_task(user, project_id, data):
         validate_dates(project, start_date, data.get("due_date"), parent=parent)
         validate_assignees(project, assignee_ids, rule,
                            "responsible_ids" if "responsible_ids" in data else "responsible_id")
+        execution = execution_candidate(project, Task(state_code="PENDIENTE"), data["state_code"])
         task = Task.objects.create(
+            actual_started_at=execution.actual_started_at,
+            actual_finished_at=execution.actual_finished_at,
             project=project,
             parent=parent,
             phase_id=parent.phase_id if parent else None,
@@ -105,10 +116,14 @@ def create_task(user, project_id, data):
             priority=data.get("priority"),
             start_date=start_date,
             due_date=data.get("due_date"),
+            calendar_precision=schedule.calendar_precision if schedule else "day",
+            start_time=schedule.start_time if schedule else None,
+            due_time=schedule.due_time if schedule else None,
             responsible_id=primary_assignee(assignee_ids),
             reason=data["reason"] or None,
             progress=100 if rule == "COMPLETADA" else 0,
         )
+        validate_family(project, task)
         save_assignees(task, assignee_ids)
         save_labels(task, data)
         from .ordering import append_position
@@ -135,13 +150,17 @@ def edit_task(user, project_id, task_id, data):
         estimate = data.get("estimated_minutes")
         if estimate is not None and (isinstance(estimate, bool) or not isinstance(estimate, int) or not 1 <= estimate <= 2147483647):
             raise ValidationError({"estimated_minutes": "Indica minutos enteros positivos o null"})
+        candidate = calendar_candidate(task, data)
         parent = task.parent if task.parent_id else None
-        validate_dates(project, data.get("start_date", task.start_date), data.get("due_date", task.due_date), parent=parent, task=task)
+        validate_dates(project, candidate.start_date, candidate.due_date, parent=parent, task=task)
+        if {"schedule", "start_date", "due_date"} & data.keys():
+            validate_family(project, candidate)
+            validate_incident(candidate, previous=task)
         assignee_ids = requested_assignees(data, task)
         validate_assignees(project, assignee_ids, state_rule(project, task.state_code),
                            "responsible_ids" if "responsible_ids" in data else "responsible_id")
-        calendar_changed = (data.get("start_date", task.start_date), data.get("due_date", task.due_date)) != (task.start_date, task.due_date)
-        if intent and not calendar_changed and set(data) <= {"start_date", "due_date", "expected_calendar_revision", "calendar_intent_id"}:
+        calendar_changed = any(getattr(candidate, key) != getattr(task, key) for key in SCHEDULE_FIELDS)
+        if intent and not calendar_changed and set(data) <= {"schedule", "start_date", "due_date", "expected_calendar_revision", "calendar_intent_id"}:
             finish_calendar_edit(task, intent)
             return task
         if calendar_changed:
@@ -153,27 +172,21 @@ def edit_task(user, project_id, task_id, data):
         for field in ("name", "description", "priority", "start_date", "due_date", "estimated_minutes"):
             if field in data:
                 setattr(task, field, data[field])
+        for field in SCHEDULE_FIELDS:
+            setattr(task, field, getattr(candidate, field))
         task.updated_at = timezone.now()
         task.save()
         save_assignees(task, assignee_ids)
         save_labels(task, data)
         record_changes(task, before, activity_values(task))
         if intent:
-            task.refresh_from_db(fields=["start_date", "due_date", "calendar_revision", "updated_at"])
+            task.refresh_from_db(fields=[*SCHEDULE_FIELDS, "calendar_revision", "updated_at"])
             finish_calendar_edit(task, intent)
     return task
 
 
 def has_supervision(user, project):
-    return (
-        user.global_role == "ADMINISTRADOR"
-        or ProjectMember.objects.filter(
-            project=project,
-            worker_id=user.worker_id,
-            active=True,
-            project_role__in=("RESPONSABLE", "REVISOR"),
-        ).exists()
-    )
+    return supervises_project(user, project)
 
 
 def transition_context(user, project, definitions=None, rules=None, legacy=None, supervision=None, *, preview=False):
@@ -208,6 +221,7 @@ def validate_transition(user, project, task, target, reason, context=None, *, di
         require_configured_state(project, target)
     elif target not in context["states"]:
         raise ValidationError({"state_code": "El estado no está habilitado en este proyecto"})
+    prepare_state_change(project, task, target)
 
 
 def apply_state_change(project, task, target, reason, nested=False, before=None, *, direct=False):
@@ -215,13 +229,16 @@ def apply_state_change(project, task, target, reason, nested=False, before=None,
     rules = definition_rules(project)
     origin = rules.get(task.state_code, task.state_code)
     destination = rules.get(target, target)
+    candidate = prepare_state_change(project, task, target)
+    task.actual_started_at = candidate.actual_started_at
+    task.actual_finished_at = candidate.actual_finished_at
     task.state_code = target
     if destination == "COMPLETADA":
         task.progress = 100
     elif destination in ("PENDIENTE", "CANCELADA") or origin in ("COMPLETADA", "CANCELADA"):
         task.progress = 0
     task.updated_at = timezone.now()
-    task.save(update_fields=["state_code", "progress", "updated_at"])
+    task.save(update_fields=["state_code", "progress", "updated_at", "actual_started_at", "actual_finished_at"])
     record_state_change(task, before)
 
 
@@ -252,27 +269,49 @@ def dependency_would_cycle(edges, predecessor, successor):
     return False
 
 
-def manage_dependency(user, project_id, task_id, predecessor_id, remove=False):
+def manage_dependency(user, project_id, task_id, predecessor_id, remove=False, dependency_type=None, *, replace=False, expected_type=None, undo_token=None):
     require_admin(user)
     with audit_actor(user), transaction.atomic():
         project = project_for_user(user, project_id, lock=True)
         editable_project(project)
         successor = task_for_user(user, project, task_id)
         predecessor = task_for_user(user, project, predecessor_id)
-        if successor.pk == predecessor.pk or successor.parent_id or predecessor.parent_id:
-            raise ValidationError({"detail": "Usa dos tareas principales diferentes del mismo proyecto"})
+        if successor.pk == predecessor.pk:
+            raise ValidationError({"detail": "Usa dos tareas diferentes del mismo proyecto"})
+        if undo_token:
+            dependency_type = read_undo(undo_token, user, project_id, predecessor_id, task_id)
         queryset = TaskDependency.objects.filter(project=project, predecessor=predecessor, successor=successor)
+        previous_edge = queryset.first()
+        previous_type = previous_edge.dependency_type if previous_edge else None
         if remove:
-            if not queryset.exists():
+            if previous_edge is None:
                 raise NotFound("Dependencia no disponible")
             queryset.delete()
         else:
-            if queryset.exists():
-                raise ValidationError({"detail": "La dependencia ya existe"})
+            from .calendar import CalendarConflict
+            if dependency_type not in ("FS", "SS", "FF", "SF") and not (undo_token and dependency_type is None):
+                raise ValidationError({"dependency_type": "Selecciona un tipo explícito: FS, SS, FF o SF."})
+            existing = queryset.first()
+            if replace:
+                if existing is None:
+                    raise NotFound("Dependencia no disponible")
+                if existing.dependency_type != expected_type:
+                    raise CalendarConflict("dependency_revision_conflict", "El tipo de dependencia cambió; consulta la relación antes de convertirla.")
+            elif existing is not None:
+                raise ValidationError({"detail": "La dependencia ya existe; conviértela explícitamente para cambiar su tipo."})
             edges = TaskDependency.objects.filter(project=project).values_list("predecessor_id", "successor_id")
             if dependency_would_cycle(edges, predecessor.pk, successor.pk):
                 raise ValidationError({"detail": "La dependencia generaría un ciclo"})
-            TaskDependency.objects.create(project=project, predecessor=predecessor, successor=successor)
-        action = "dependency_removed" if remove else "dependency_added"
-        record_activity(successor, action, new={"direction": "blocked_by", "id": predecessor.pk, "name": predecessor.name}, related_task_id=predecessor.pk)
-        record_activity(predecessor, action, new={"direction": "blocks", "id": successor.pk, "name": successor.name}, related_task_id=successor.pk)
+            if replace:
+                queryset.update(dependency_type=dependency_type)
+            else:
+                with restoring_legacy(bool(undo_token) and dependency_type is None):
+                    TaskDependency.objects.create(project=project, predecessor=predecessor, successor=successor, dependency_type=dependency_type)
+        Task.objects.filter(pk__in=[predecessor.pk, successor.pk]).update(updated_at=timezone.now())
+        if remove:
+            dependency_type = previous_type
+        action = "dependency_removed" if remove else "dependency_changed" if replace else "dependency_added"
+        record_activity(successor, action, old={"type": previous_type} if replace or remove else None, new={"direction": "blocked_by", "id": predecessor.pk, "name": predecessor.name, "type": dependency_type}, related_task_id=predecessor.pk)
+        record_activity(predecessor, action, old={"type": previous_type} if replace or remove else None, new={"direction": "blocks", "id": successor.pk, "name": successor.name, "type": dependency_type}, related_task_id=successor.pk)
+
+    return previous_type if remove else dependency_type

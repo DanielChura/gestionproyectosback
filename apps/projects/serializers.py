@@ -77,7 +77,24 @@ def validate_assignee_input(attrs, initial):
                 raise serializers.ValidationError({"responsible_ids": "Usa solo una forma de indicar los responsables"})
 
 
+class ProjectMemberRoleSerializer(StrictSerializer):
+    role = serializers.ChoiceField(choices=("COLABORADOR", "RESPONSABLE", "REVISOR"))
+
+
+class TaskScheduleSerializer(StrictSerializer):
+    precision = serializers.ChoiceField(choices=("day", "hour"))
+    start = serializers.CharField(max_length=40)
+    end = serializers.CharField(max_length=40, allow_null=True)
+    timezone = serializers.ChoiceField(choices=("America/Lima",), default="America/Lima")
+
+    def validate(self, attrs):
+        from .services.scheduling import parse_schedule
+        parse_schedule(attrs)
+        return attrs
+
+
 class TaskCreateSerializer(StrictSerializer):
+    schedule = TaskScheduleSerializer(required=False)
     name = serializers.CharField(max_length=180)
     description = serializers.CharField(max_length=10000, required=False, allow_blank=True, default="")
     state_code = serializers.CharField(max_length=20)
@@ -94,6 +111,8 @@ class TaskCreateSerializer(StrictSerializer):
     retained_label_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, max_length=50)
 
     def validate(self, attrs):
+        if "schedule" in attrs and {"start_date", "due_date"} & attrs.keys():
+            raise serializers.ValidationError({"schedule": "Usa una sola representación de calendario por solicitud."})
         validate_assignee_input(attrs, self.initial_data)
         validate_labels(attrs["labels"])
         if len(attrs.get("specialty_ids", [])) != len(set(attrs.get("specialty_ids", []))):
@@ -104,6 +123,7 @@ class TaskCreateSerializer(StrictSerializer):
 
 
 class TaskEditSerializer(StrictSerializer):
+    schedule = TaskScheduleSerializer(required=False)
     expected_calendar_revision = serializers.IntegerField(min_value=1, max_value=9223372036854775807, required=False)
     calendar_intent_id = serializers.UUIDField(required=False)
     estimated_minutes = serializers.IntegerField(min_value=1, max_value=2147483647, allow_null=True, required=False)
@@ -122,6 +142,8 @@ class TaskEditSerializer(StrictSerializer):
     def validate(self, attrs):
         from .services.calendar import validate_calendar_preconditions
         validate_calendar_preconditions(attrs)
+        if "schedule" in attrs and {"start_date", "due_date"} & attrs.keys():
+            raise serializers.ValidationError({"schedule": "Usa una sola representación de calendario por solicitud."})
         validate_assignee_input(attrs, self.initial_data)
         if not attrs:
             raise serializers.ValidationError({"detail": "Indica los datos que quieres modificar"})
@@ -142,12 +164,34 @@ class TaskStateSerializer(StrictSerializer):
 
 
 class TaskMoveSerializer(TaskStateSerializer):
+    mode = serializers.ChoiceField(choices=("state", "hierarchy"), default="state")
+    parent_id = serializers.IntegerField(min_value=1, allow_null=True, required=False)
     before_id = serializers.IntegerField(min_value=1, allow_null=True)
     expected_revision = serializers.CharField(min_length=64, max_length=64)
+
+    def validate(self, attrs):
+        if attrs["mode"] == "hierarchy" and "parent_id" not in attrs:
+            raise serializers.ValidationError({"parent_id": "Indica el padre de destino"})
+        if attrs["mode"] == "state" and "parent_id" in attrs:
+            raise serializers.ValidationError({"parent_id": "El movimiento por estado conserva el padre"})
+        return attrs
 
 
 class DependencySerializer(StrictSerializer):
     predecessor_id = serializers.IntegerField(min_value=1)
+    dependency_type = serializers.ChoiceField(choices=("FS", "SS", "FF", "SF"), required=False)
+    undo_token = serializers.CharField(max_length=4096, required=False)
+    expected_type = serializers.ChoiceField(choices=("FS", "SS", "FF", "SF"), allow_null=True, required=False)
+
+    def validate(self, attrs):
+        method = self.context.get("method", "POST")
+        if method != "DELETE" and "dependency_type" not in attrs and "undo_token" not in attrs:
+            raise serializers.ValidationError({"dependency_type": "Selecciona FS, SS, FF o SF; las nuevas relaciones requieren tipo explícito."})
+        if "undo_token" in attrs and (method != "POST" or "dependency_type" in attrs):
+            raise serializers.ValidationError({"undo_token": "Usa la intención de restauración sin cambiar su tipo."})
+        if method == "PATCH" and "expected_type" not in attrs:
+            raise serializers.ValidationError({"expected_type": "Indica el tipo leído antes de convertir esta relación."})
+        return attrs
 
 
 class TaskRelationSerializer(StrictSerializer):
