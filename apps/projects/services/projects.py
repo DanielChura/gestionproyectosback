@@ -187,6 +187,47 @@ def create_project(user, data):
     return project
 
 
+def add_project_participants(user, project_id, data):
+    from .teams import team_options
+    require_admin(user)
+    with audit_actor(user), transaction.atomic():
+        project = Project.objects.select_for_update().filter(pk=project_id).first()
+        if project is None:
+            raise NotFound("Proyecto no disponible")
+        area_id = project.area_id
+        areas = active_area_ids([area_id])
+        worker_ids = data.get("worker_ids", [])
+        team_ids = data.get("team_ids", [])
+        if data.get("participant_source", "workers") == "teams":
+            teams = team_options(area_id, ids=team_ids, lock=True)
+            if any(not team["eligible_count"] for team in teams):
+                raise ValidationError({"team_ids": "Cada equipo seleccionado debe aportar integrantes elegibles"})
+            worker_ids = sorted({person["id"] for team in teams for person in team["members"] if person["eligible"]})
+        list(Worker.objects.select_for_update().filter(pk__in=worker_ids).order_by("pk"))
+        list(User.objects.select_for_update().filter(worker_id__in=worker_ids).order_by("pk"))
+        workers = list(eligible_workers(areas).filter(pk__in=worker_ids))
+        if len(workers) != len(worker_ids):
+            raise ValidationError({"worker_ids": "Hay trabajadores no elegibles para el área seleccionada"})
+        existing_worker_ids = set(ProjectMember.objects.filter(project=project, worker__in=workers).values_list("worker_id", flat=True))
+        new_members = [
+            ProjectMember(project=project, worker=worker)
+            for worker in workers
+            if worker.pk not in existing_worker_ids
+        ]
+        if new_members:
+            ProjectMember.objects.bulk_create(new_members)
+        existing_team_ids = set(ProjectTeam.objects.filter(project=project, team_id__in=team_ids).values_list("team_id", flat=True))
+        new_teams = [
+            ProjectTeam(project=project, team_id=pk)
+            for pk in team_ids
+            if pk not in existing_team_ids
+        ]
+        if new_teams:
+            ProjectTeam.objects.bulk_create(new_teams)
+    return project_snapshot(project, user, detailed=True)
+
+
+
 def worker_candidates(area_ids, search):
     if len(area_ids) != 1:
         raise ValidationError({"area_ids": "Selecciona exactamente un área"})

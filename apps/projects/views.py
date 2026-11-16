@@ -31,7 +31,7 @@ from .services.dependency_undo import issue_undo
 from .services.favorites import set_project_favorite
 from .services.listings import project_area_page, project_page
 from .services.presentation import task_snapshot, task_snapshots
-from .services.projects import create_project, project_snapshot, set_project_member_role, worker_candidates
+from .services.projects import add_project_participants, create_project, project_snapshot, set_project_member_role, worker_candidates
 from .services.tasks import change_task_state, create_task, edit_task, manage_dependency
 from .services.statuses import catalog_states, configure_task_states, status_configuration
 from .services.state_templates import project_templates, save_template
@@ -125,6 +125,12 @@ class ProjectMemberRoleView(ProjectApiView):
             request.user, project_id, worker_id, serializer.validated_data["role"]
         )
         return Response(participants)
+
+
+class ProjectMembersView(ProjectApiView):
+    def post(self, request, project_id):
+        return Response(add_project_participants(request.user, project_id, request.data))
+
 
 
 class ProjectChartsView(ProjectApiView):
