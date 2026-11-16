@@ -61,6 +61,10 @@ class SchedulingMySQLTests(SchedulingContractTests):
             cursor.execute("SELECT COUNT(*) FROM actividad_historial")
             if history != cursor.fetchone()[0]:
                 raise RuntimeError("Upgrade invented execution history")
+        followup = import_module("apps.projects.migrations.0021_record_dependencies_without_retroactive_validation")
+        state = MigrationLoader(None).project_state([("proyectos", "0019_task_scheduling_dependencies")])
+        with patch.dict(os.environ, {"TASK_SCHEDULING_MIGRATION_MAINTENANCE": "1"}):
+            MigrationExecutor(connection).apply_migration(state, followup.Migration("0021_record_dependencies_without_retroactive_validation", "proyectos"))
         cls.upgrade_verified = Task.objects.filter(calendar_precision="day", actual_started_at=None, actual_finished_at=None).count() == 2
         cls.legacy_verified = TaskDependency.objects.filter(dependency_type=None).count() == 1
         Fixtures.tearDown(fixture)
@@ -80,14 +84,14 @@ class SchedulingMySQLTests(SchedulingContractTests):
                 cursor.execute(f"DROP PROCEDURE IF EXISTS {name}")
         Fixtures.tearDownClass.__func__(cls)
 
-    def test_legacy_stays_informative_and_conversion_requires_reviewed_history(self):
+    def test_legacy_stays_informative_and_conversion_preserves_type_without_retroactive_proof(self):
         self.assertTrue(self.upgrade_verified)
         self.assertTrue(self.legacy_verified)
         project=self.project()
         a,b=[self.task(project,schedule=self.hour()) for _ in range(2)]
         self.assertEqual(self.state(b,"EN_CURSO").status_code,200)
-        self.assertEqual(self.edge(a,b,"SS").status_code,400)
-        self.assertEqual(TaskDependency.objects.count(),0)
+        self.assertEqual(self.edge(a,b,"SS").status_code,201)
+        self.assertEqual(TaskDependency.objects.count(),1)
 
     def race(self, project, actions):
         held,attempted,release=Event(),Event(),Event()
@@ -180,3 +184,33 @@ class SchedulingMySQLTests(SchedulingContractTests):
             with patch.dict(os.environ,{"TASK_SCHEDULING_MIGRATION_MAINTENANCE":"1"}),self.assertRaises(RuntimeError):
                 migration.uninstall(None,editor)
         task.refresh_from_db();self.assertEqual(task.start_time.hour,8)
+
+    def test_current_migration_reversal_preserves_subtask_and_incompatible_historical_links(self):
+        migration = import_module("apps.projects.migrations.0021_record_dependencies_without_retroactive_validation")
+        project = self.project()
+        a, b = self.task(project), self.task(project)
+        self.assertEqual(self.edge(a, b, "FS").status_code, 201)
+        with patch.dict(os.environ, {"TASK_SCHEDULING_MIGRATION_MAINTENANCE": "1"}), connection.schema_editor() as editor:
+            with self.assertRaises(RuntimeError):
+                migration.uninstall(None, editor)
+        self.assertTrue(TaskDependency.objects.filter(predecessor=a, successor=b, dependency_type="FS").exists())
+        child = self.task(project, parent_id=b.pk)
+        self.assertEqual(self.edge(a, child, "SS").status_code, 201)
+        with patch.dict(os.environ, {"TASK_SCHEDULING_MIGRATION_MAINTENANCE": "1"}), connection.schema_editor() as editor:
+            with self.assertRaises(RuntimeError):
+                migration.uninstall(None, editor)
+        self.assertTrue(TaskDependency.objects.filter(predecessor=a, successor=child).exists())
+
+    def test_current_migration_roundtrip_keeps_compatible_links_and_calendar(self):
+        migration = import_module("apps.projects.migrations.0021_record_dependencies_without_retroactive_validation")
+        project = self.project()
+        a, b = self.task(project), self.task(project)
+        self.assertEqual(self.edge(a, b, "SS").status_code, 201)
+        before = list(Task.objects.filter(project=project).values("id", "start_date", "due_date", "state_code", "calendar_revision", "actual_started_at", "actual_finished_at"))
+        history = TaskActivity.objects.count()
+        with patch.dict(os.environ, {"TASK_SCHEDULING_MIGRATION_MAINTENANCE": "1"}), connection.schema_editor() as editor:
+            migration.uninstall(None, editor)
+            migration.install(None, editor)
+        self.assertEqual(list(Task.objects.filter(project=project).values("id", "start_date", "due_date", "state_code", "calendar_revision", "actual_started_at", "actual_finished_at")), before)
+        self.assertEqual(TaskActivity.objects.count(), history)
+        self.assertTrue(TaskDependency.objects.filter(predecessor=a, successor=b, dependency_type="SS").exists())

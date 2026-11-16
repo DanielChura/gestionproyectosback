@@ -134,50 +134,70 @@ def execution_candidate(project, task, target):
     return candidate
 
 
-def edge_problems(predecessor, successor, kind, *, retroactive=False):
+def event_pending(task, side):
+    actual = task.actual_started_at if side == "S" else task.actual_finished_at
+    if actual is not None:
+        return False
+    rule = execution_rule(task.project, task.state_code)
+    return rule in ("pending", "blocked") if side == "S" else rule not in ("finished", "cancelled")
+
+
+def edge_problems(predecessor, successor, kind, *, planning=True, execution=True):
     if kind is None:
         return []
-    a_start, a_end = planned_window(predecessor)
-    b_start, b_end = planned_window(successor)
-    required_plan = a_end if kind[0] == "F" else a_start
-    conditioned_plan = b_start if kind[1] == "S" else b_end
     issues = []
-    if required_plan is None or conditioned_plan is None:
-        issues.append({"event": "planning", "detail": f"{kind}: define los extremos requeridos antes de vincular o modificar el calendario."})
-    elif conditioned_plan < required_plan:
-        issues.append({"event": "planning", "detail": f"{kind}: el extremo condicionado no puede preceder al requisito. Ajusta las fechas o revisa el tipo de dependencia."})
-    required_real = predecessor.actual_finished_at if kind[0] == "F" else predecessor.actual_started_at
-    conditioned_real = successor.actual_started_at if kind[1] == "S" else successor.actual_finished_at
-    if conditioned_real and (required_real is None or required_real > conditioned_real):
-        issues.append({"event": "start" if kind[1] == "S" else "finish", "detail": f"{kind}: falta el evento real del requisito o es posterior al evento condicionado. Completa el requisito antes de continuar."})
-    if kind[0] == "F" and predecessor.state_code == "CANCELADA" and conditioned_real:
-        issues.append({"event": "execution", "detail": f"{kind}: cancelar el requisito no acredita su finalización satisfactoria."})
-    if retroactive and conditioned_real is None:
-        rule = execution_rule(successor.project, successor.state_code)
-        if rule == "finished" or kind[1] == "S" and rule == "started":
-            issues.append({"event": "history", "detail": "No se puede acreditar el evento real histórico. No conviertas ni añadas esta restricción retroactivamente; revisa el estado mediante un flujo autorizado."})
+    if planning:
+        a_start, a_end = planned_window(predecessor)
+        b_start, b_end = planned_window(successor)
+        required_plan = a_end if kind[0] == "F" else a_start
+        conditioned_plan = b_start if kind[1] == "S" else b_end
+        if required_plan is None or conditioned_plan is None:
+            issues.append({"event": "planning", "detail": f"{kind}: define los extremos requeridos antes de modificar el calendario."})
+        elif conditioned_plan < required_plan:
+            issues.append({"event": "planning", "detail": f"{kind}: el extremo condicionado no puede preceder al requisito. Ajusta las fechas o revisa el tipo de dependencia."})
+    if execution:
+        required_real = predecessor.actual_finished_at if kind[0] == "F" else predecessor.actual_started_at
+        conditioned_real = successor.actual_started_at if kind[1] == "S" else successor.actual_finished_at
+        if conditioned_real and (required_real is None or required_real > conditioned_real):
+            issues.append({"event": "start" if kind[1] == "S" else "finish", "detail": f"{kind}: falta el evento real del requisito o es posterior al evento condicionado. Completa el requisito antes de continuar."})
+        if kind[0] == "F" and predecessor.state_code == "CANCELADA" and conditioned_real:
+            issues.append({"event": "execution", "detail": f"{kind}: cancelar el requisito no acredita su finalización satisfactoria."})
     return issues
 
 
-def validate_edge(predecessor, successor, kind, *, retroactive=False):
-    issues = edge_problems(predecessor, successor, kind, retroactive=retroactive)
+def validate_edge(predecessor, successor, kind, *, planning=True, execution=True):
+    issues = edge_problems(predecessor, successor, kind, planning=planning, execution=execution)
     if issues:
         raise ValidationError({"code": "dependency_constraint", "detail": issues[0]["detail"], "restrictions": issues})
 
 
-def validate_incident(task):
+def validate_incident(task, *, previous, events=False):
     edges = TaskDependency.objects.filter(project_id=task.project_id, dependency_type__isnull=False).filter(
         Q(predecessor_id=task.pk) | Q(successor_id=task.pk)
-    ).select_related("predecessor", "successor")
+    ).select_related("predecessor__project", "successor__project")
     for edge in edges:
         predecessor = task if edge.predecessor_id == task.pk else edge.predecessor
         successor = task if edge.successor_id == task.pk else edge.successor
-        validate_edge(predecessor, successor, edge.dependency_type)
+        before_predecessor = previous if edge.predecessor_id == task.pk else edge.predecessor
+        before_successor = previous if edge.successor_id == task.pk else edge.successor
+        if events:
+            field = "actual_started_at" if edge.dependency_type[1] == "S" else "actual_finished_at"
+            required_field = "actual_finished_at" if edge.dependency_type[0] == "F" else "actual_started_at"
+            conditioned_changed = edge.successor_id == task.pk and getattr(task, field) is not None and getattr(task, field) != getattr(previous, field)
+            requirement_changed = edge.predecessor_id == task.pk and getattr(task, required_field) != getattr(previous, required_field)
+            was_valid = not edge_problems(before_predecessor, before_successor, edge.dependency_type, planning=False)
+            if conditioned_changed or requirement_changed and was_valid:
+                validate_edge(predecessor, successor, edge.dependency_type, planning=False)
+        else:
+            was_valid = not edge_problems(before_predecessor, before_successor, edge.dependency_type, execution=False)
+            if event_pending(successor, edge.dependency_type[1]) or was_valid:
+                validate_edge(predecessor, successor, edge.dependency_type, execution=False)
+
 
 
 def prepare_state_change(project, task, target):
     candidate = execution_candidate(project, task, target)
-    validate_incident(candidate)
+    validate_incident(candidate, previous=task, events=True)
     return candidate
 
 

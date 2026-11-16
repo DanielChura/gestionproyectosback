@@ -116,15 +116,16 @@ class SchedulingContractTests(unittest.TestCase):
                 successor.refresh_from_db()
                 self.assertEqual(successor.calendar_revision, 1)
 
-    def test_date_fs_inclusive_end_requires_next_day_and_ss_allows_same_day(self):
+    def test_registration_preserves_explicit_fs_and_ss_with_same_day_plans(self):
         project = self.project()
         a = self.task(project, due_date=str(self.today))
         b = self.task(project, start_date=str(self.today), due_date=str(self.today))
-        self.assertEqual(self.edge(a, b, "FS").status_code, 400)
+        self.assertEqual(self.edge(a, b, "FS").status_code, 201)
+        self.assertEqual(self.edge(a, b, "FS", "delete").status_code, 204)
         self.assertEqual(self.edge(a, b, "SS").status_code, 201)
-        self.assertEqual(self.edge(a, b, "FS", "patch", expected_type="SS").status_code, 400)
-        self.assertEqual(self.patch_task(b, start_date=str(self.today + timedelta(days=1)), due_date=str(self.today + timedelta(days=1))).status_code, 200)
         self.assertEqual(self.edge(a, b, "FS", "patch", expected_type="SS").status_code, 200)
+        self.assertEqual(self.patch_task(b, start_date=str(self.today + timedelta(days=1)), due_date=str(self.today + timedelta(days=1))).status_code, 200)
+        self.assertEqual(self.edge(a, b, "FS", "patch", expected_type="FS").status_code, 200)
 
     def test_four_types_gate_correct_real_event_and_direct_completion_checks_both(self):
         for kind in ["FS", "SS", "FF", "SF"]:
@@ -185,14 +186,14 @@ class SchedulingContractTests(unittest.TestCase):
         foreign = self.task(self.project(), schedule=self.hour())
         self.assertEqual(self.edge(foreign,a,"SS").status_code,404)
         child = self.task(project,parent_id=a.pk,schedule=self.hour())
-        self.assertEqual(self.edge(child,c,"SS").status_code,400)
+        self.assertEqual(self.edge(child,c,"SS").status_code,201)
         for user in [self.worker,self.outsider]:
             result=self.request("post",f"{project.pk}/tasks/{b.pk}/dependencies/",{"predecessor_id":a.pk,"dependency_type":"SS"},user)
             self.assertEqual(result.status_code,403)
         result=self.request("post",f"{project.pk}/tasks/{a.pk}/dependencies/",{"predecessor_id":c.pk},self.admin)
         self.assertEqual(result.status_code,400)
 
-    def test_legacy_stays_informative_and_conversion_requires_reviewed_history(self):
+    def test_legacy_stays_informative_and_conversion_preserves_type_without_retroactive_proof(self):
         project = self.project()
         a,b = [self.task(project, schedule=self.hour()) for _ in range(2)]
         if connection.vendor == "mysql":
@@ -200,10 +201,10 @@ class SchedulingContractTests(unittest.TestCase):
         TaskDependency.objects.create(project=project,predecessor=a,successor=b)
         self.assertEqual(self.state(b,"EN_CURSO").status_code,200)
         response=self.edge(a,b,"SS","patch",expected_type=None)
-        self.assertEqual(response.status_code,400)
-        self.assertIsNone(TaskDependency.objects.get(project=project,predecessor=a,successor=b).dependency_type)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(TaskDependency.objects.get(project=project,predecessor=a,successor=b).dependency_type, "SS")
         self.assertEqual(self.state(b,"PENDIENTE").status_code,200)
-        self.assertEqual(self.edge(a,b,"SS","patch",expected_type=None).status_code,200)
+        self.assertEqual(self.edge(a,b,"SS","patch",expected_type="SS").status_code,200)
         self.assertEqual(self.edge(a,b,"FF","patch",expected_type=None).status_code,409)
 
     def test_movement_endpoint_uses_identical_execution_validation(self):
@@ -268,3 +269,105 @@ class SchedulingContractTests(unittest.TestCase):
         b.refresh_from_db();self.assertEqual(b.state_code,"PENDIENTE")
         self.assertIsNone(b.actual_started_at)
         self.assertEqual(TaskActivity.objects.count(),before)
+
+    def test_completed_historical_links_and_calendar_keep_state_parent_and_real_history(self):
+        from apps.projects.services.audit import audit_actor
+        for kind in ("FS", "SS", "FF", "SF"):
+            with self.subTest(kind=kind):
+                project = self.project()
+                predecessor = self.task(project, start_date=str(self.today + timedelta(days=2)))
+                parent = self.task(project)
+                child = self.task(project, parent_id=parent.pk, due_date=None)
+                self.assertEqual(self.state(child, "COMPLETADA").status_code, 200)
+                self.assertEqual(self.state(parent, "COMPLETADA").status_code, 200)
+                with audit_actor(self.admin):
+                    Task.objects.filter(pk__in=[parent.pk, child.pk]).update(actual_started_at=None, actual_finished_at=None)
+                child.refresh_from_db()
+                before = (child.state_code, child.parent_id, child.actual_started_at, child.actual_finished_at)
+                candidates = self.request("get", f"{project.pk}/tasks/{child.pk}/related-candidates/?kind=blocked_by", user=self.admin)
+                self.assertEqual(candidates.status_code, 200, candidates.content)
+                self.assertIn(predecessor.pk, [item["id"] for item in candidates.json()["items"]])
+                candidates = self.request("get", f"{project.pk}/tasks/{predecessor.pk}/related-candidates/?kind=blocks", user=self.admin)
+                self.assertIn(child.pk, [item["id"] for item in candidates.json()["items"]])
+                result = self.edge(predecessor, child, kind)
+                self.assertEqual(result.status_code, 201, result.content)
+                result = self.patch_task(child, due_date=str(self.today + timedelta(days=1)))
+                self.assertEqual(result.status_code, 200, result.content)
+                child.refresh_from_db()
+                self.assertEqual((child.state_code, child.parent_id, child.actual_started_at, child.actual_finished_at), before)
+                self.assertEqual(TaskDependency.objects.get(project=project, predecessor=predecessor, successor=child).dependency_type, kind)
+                self.assertEqual(self.edge(predecessor, child, kind).status_code, 400)
+                self.assertEqual(self.edge(child, predecessor, kind).status_code, 400)
+                snapshot = self.request("get", f"{project.pk}/tasks/{child.pk}/", user=self.admin).json()["task"]
+                self.assertTrue(snapshot["permissions"]["dependencies"])
+
+    def test_completed_nested_parent_can_complete_dates_without_changing_child_or_history(self):
+        from apps.projects.services.audit import audit_actor
+
+        project = self.project()
+        parent = self.task(project)
+        hello = self.task(project, parent_id=parent.pk, due_date=None)
+        child = self.task(project, parent_id=hello.pk, due_date=None)
+        self.assertEqual(self.state(child, "BLOQUEADA").status_code, 200)
+        self.assertEqual(self.state(hello, "COMPLETADA").status_code, 200)
+        with audit_actor(self.admin):
+            Task.objects.filter(pk=hello.pk).update(actual_started_at=None, actual_finished_at=None)
+        hello.refresh_from_db()
+        before = (hello.state_code, hello.parent_id, hello.actual_started_at, hello.actual_finished_at)
+        child_before = Task.objects.filter(pk=child.pk).values().get()
+        result = self.patch_task(hello, due_date=str(self.today + timedelta(days=2)))
+        self.assertEqual(result.status_code, 200, result.content)
+        hello.refresh_from_db()
+        self.assertEqual(hello.due_date, self.today + timedelta(days=2))
+        self.assertEqual((hello.state_code, hello.parent_id, hello.actual_started_at, hello.actual_finished_at), before)
+        self.assertEqual(Task.objects.filter(pk=child.pk).values().get(), child_before)
+        result = self.patch_task(hello, start_date=str(self.today + timedelta(days=1)))
+        self.assertEqual(result.status_code, 400, result.content)
+        hello.refresh_from_db()
+        self.assertEqual(hello.start_date, self.today)
+        self.assertEqual((hello.state_code, hello.parent_id, hello.actual_started_at, hello.actual_finished_at), before)
+
+    def test_recording_incompatible_plans_does_not_allow_a_future_conditioned_event(self):
+        project = self.project()
+        a = self.task(project, schedule=self.hour(13, 14))
+        b = self.task(project, schedule=self.hour(9, 10))
+        self.assertEqual(self.edge(a, b, "FS").status_code, 201)
+        self.assertEqual(self.state(b, "EN_CURSO").status_code, 400)
+        self.assertEqual(self.state(a, "COMPLETADA").status_code, 200)
+        self.assertEqual(self.state(b, "EN_CURSO").status_code, 200)
+
+    def test_delete_receipt_restores_original_type_and_validates_actor_direction_and_expiry(self):
+        project = self.project()
+        a, b, c = self.task(project), self.task(project), self.task(project)
+        path = f"{project.pk}/tasks/{b.pk}/dependencies/"
+        for kind in ("FS", "SS", "FF", "SF", None):
+            with self.subTest(kind=kind):
+                if kind is None:
+                    from apps.projects.services.dependency_undo import restoring_legacy
+                    with restoring_legacy(True):
+                        TaskDependency.objects.create(project=project, predecessor=a, successor=b)
+                else:
+                    self.assertEqual(self.edge(a, b, kind).status_code, 201)
+                removed = self.request("delete", path, {"predecessor_id": a.pk}, self.admin)
+                self.assertEqual(removed.status_code, 204, removed.content)
+                self.assertFalse(TaskDependency.objects.filter(predecessor=a, successor=b).exists())
+                token = removed["X-GM-Dependency-Undo"]
+                self.assertIn("X-GM-Dependency-Undo", removed["Access-Control-Expose-Headers"])
+                self.assertIn("X-GM-Dependency-Undo-Expires", removed["Access-Control-Expose-Headers"])
+                self.assertLessEqual(int(removed["X-GM-Dependency-Undo-Expires"]), (timezone.now().timestamp() + 10) * 1000)
+                payload = {"predecessor_id": a.pk, "undo_token": token}
+                self.assertEqual(self.request("post", path, {**payload, "undo_token": token + "invalid"}, self.admin).status_code, 400)
+                self.assertEqual(self.request("post", path, {**payload, "predecessor_id": c.pk}, self.admin).status_code, 400)
+                with patch("apps.projects.services.dependency_undo.timezone.now", return_value=timezone.now() + timedelta(seconds=11)):
+                    self.assertEqual(self.request("post", path, payload, self.admin).status_code, 400)
+                self.assertEqual(self.request("post", path, payload, self.worker).status_code, 403)
+                restored = self.request("post", path, payload, self.admin)
+                self.assertEqual(restored.status_code, 201, restored.content)
+                self.assertEqual(TaskDependency.objects.get(predecessor=a, successor=b).dependency_type, kind)
+                self.assertEqual(self.request("post", path, payload, self.admin).status_code, 400)
+                self.assertEqual(self.edge(b, a, "FS").status_code, 400)
+                self.assertEqual(self.request("delete", path, {"predecessor_id": a.pk}, self.admin).status_code, 204)
+                if connection.vendor == "mysql":
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT @gm_dependency_restore")
+                        self.assertNotEqual(cursor.fetchone()[0], 1)

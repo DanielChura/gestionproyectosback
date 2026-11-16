@@ -129,7 +129,7 @@ def task_snapshot_from_context(
             "state": can_state,
             "assign": manageable,
             "create_child": can_create and (admin or assigned) and metadata.get("category") not in ("done", "closed"),
-            "dependencies": manageable and not task.parent_id,
+            "dependencies": manageable,
             "relations": manageable,
         },
     }
