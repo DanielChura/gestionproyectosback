@@ -26,6 +26,7 @@ from .serializers import (
 )
 from .services.access import project_for_user, require_admin, tasks_for_user
 from .services.charts import project_chart_data
+from .services.dependency_undo import issue_undo
 from .services.favorites import set_project_favorite
 from .services.listings import project_area_page, project_page
 from .services.presentation import task_snapshot, task_snapshots
@@ -250,7 +251,7 @@ class TaskDependenciesView(ProjectApiView):
     def post(self, request, project_id, task_id):
         serializer = DependencySerializer(data=request.data, context={"method": request.method})
         serializer.is_valid(raise_exception=True)
-        manage_dependency(request.user, project_id, task_id, serializer.validated_data["predecessor_id"], dependency_type=serializer.validated_data["dependency_type"])
+        manage_dependency(request.user, project_id, task_id, serializer.validated_data["predecessor_id"], dependency_type=serializer.validated_data.get("dependency_type"), undo_token=serializer.validated_data.get("undo_token"))
         return Response({"detail": "Dependencia agregada"}, status=201)
 
     def patch(self, request, project_id, task_id):
@@ -264,8 +265,12 @@ class TaskDependenciesView(ProjectApiView):
     def delete(self, request, project_id, task_id):
         serializer = DependencySerializer(data=request.data, context={"method": request.method})
         serializer.is_valid(raise_exception=True)
-        manage_dependency(request.user, project_id, task_id, serializer.validated_data["predecessor_id"], remove=True)
-        return Response(status=204)
+        kind = manage_dependency(request.user, project_id, task_id, serializer.validated_data["predecessor_id"], remove=True)
+        token, expires = issue_undo(request.user, project_id, serializer.validated_data["predecessor_id"], task_id, kind)
+        return Response(status=204, headers={
+            "X-GM-Dependency-Undo": token, "X-GM-Dependency-Undo-Expires": str(expires),
+            "Access-Control-Expose-Headers": "X-GM-Dependency-Undo, X-GM-Dependency-Undo-Expires",
+        })
 
 
 class TaskActivityView(ProjectApiView):

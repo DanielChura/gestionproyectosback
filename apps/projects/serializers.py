@@ -176,12 +176,15 @@ class TaskMoveSerializer(TaskStateSerializer):
 class DependencySerializer(StrictSerializer):
     predecessor_id = serializers.IntegerField(min_value=1)
     dependency_type = serializers.ChoiceField(choices=("FS", "SS", "FF", "SF"), required=False)
+    undo_token = serializers.CharField(max_length=4096, required=False)
     expected_type = serializers.ChoiceField(choices=("FS", "SS", "FF", "SF"), allow_null=True, required=False)
 
     def validate(self, attrs):
         method = self.context.get("method", "POST")
-        if method != "DELETE" and "dependency_type" not in attrs:
+        if method != "DELETE" and "dependency_type" not in attrs and "undo_token" not in attrs:
             raise serializers.ValidationError({"dependency_type": "Selecciona FS, SS, FF o SF; las nuevas relaciones requieren tipo explícito."})
+        if "undo_token" in attrs and (method != "POST" or "dependency_type" in attrs):
+            raise serializers.ValidationError({"undo_token": "Usa la intención de restauración sin cambiar su tipo."})
         if method == "PATCH" and "expected_type" not in attrs:
             raise serializers.ValidationError({"expected_type": "Indica el tipo leído antes de convertir esta relación."})
         return attrs

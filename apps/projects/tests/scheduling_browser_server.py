@@ -57,6 +57,9 @@ def seed(fixture, credentials):
         if response.status_code!=201: raise RuntimeError(response.content)
         ids.append(response.json()["id"])
     credentials["scheduling"]={"project":project.pk,"source":ids[0],"target":ids[1],"unbounded":ids[2],"legacy_source":old_a.pk,"legacy_target":old_b.pk,"day":day}
+    if os.environ.get("GM_GANTT_DIRECT_BROWSER") == "1":
+        from .gantt_direct_browser import prepare as prepare_direct
+        prepare_direct(fixture, credentials)
     print("Scheduling QA through 0019 ready; only synthetic records.",flush=True)
 
 serve(seed)

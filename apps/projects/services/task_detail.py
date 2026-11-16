@@ -41,11 +41,8 @@ def relation_candidates(user, project_id, task_id, query):
     text = query.get("q", "").strip()
     if kind not in ("blocks", "blocked_by", "custom") or len(text) > 100:
         raise ValidationError({"detail": "Búsqueda no válida"})
-    if kind != "custom" and task.parent_id:
-        raise ValidationError({"detail": "Las dependencias solo admiten tareas principales"})
     tasks = tasks_for_user(user, project).exclude(pk=task.pk)
     if kind != "custom":
-        tasks = tasks.filter(parent_id=None)
         edges = list(TaskDependency.objects.filter(project=project).values_list("predecessor_id", "successor_id"))
         graph = {}
         for predecessor, successor in edges:
