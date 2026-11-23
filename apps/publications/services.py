@@ -56,7 +56,6 @@ def publication_queryset(user):
         return queryset
     if user.global_role != "TRABAJADOR":
         raise PermissionDenied("Cuenta no autorizada")
-    today = timezone.localdate()
     return queryset.annotate(
         applied=Exists(
             PublicationAssignment.objects.filter(
@@ -72,12 +71,6 @@ def publication_queryset(user):
                 active=True,
             )
         ),
-    ).filter(
-        project_id__in=visible_projects(user).values("pk"),
-        state=PublicationState.OPEN,
-        opening_date__lte=today,
-        closing_date__gte=today,
-        occupied__lt=F("vacancies"),
     )
 
 
@@ -117,15 +110,13 @@ def list_publications(user, params):
 
 
 def publication_catalog(user):
-    projects = []
-    if user.global_role == "ADMINISTRADOR":
-        terminal = ProjectState.objects.filter(terminal=True).values("pk")
-        projects = list(
-            Project.objects.filter(archived=False)
-            .exclude(state_code__in=terminal)
-            .order_by("name")
-            .values("id", "code", "name")
-        )
+    terminal = ProjectState.objects.filter(terminal=True).values("pk")
+    projects = list(
+        Project.objects.filter(archived=False)
+        .exclude(state_code__in=terminal)
+        .order_by("name")
+        .values("id", "code", "name")
+    )
     return {
         "states": [{"code": code, "name": name} for code, name in PublicationState.choices],
         "levels": [1, 2, 3],

@@ -19,7 +19,11 @@ from .services.specialties import delete_worker_specialty, upsert_worker_special
 class WorkerViewSet(viewsets.ModelViewSet):
     queryset = Worker.objects.select_related("area").prefetch_related("worker_specialties__specialty").order_by("id")
     serializer_class = WorkerSerializer
-    permission_classes = [IsAdministrator]
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve", "my_specialty_options"):
+            return [IsAuthenticated()]
+        return [IsAdministrator()]
 
     def get_queryset(self):
         queryset = super().get_queryset()
