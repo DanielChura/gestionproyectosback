@@ -58,8 +58,7 @@ def visible_projects(user):
             is_member=Exists(members.filter(active=True)),
             revoked_member=Exists(members.filter(active=False)),
         )
-        .filter(area_id__in=areas)
-        .filter(Q(is_member=True) | Q(available=True, confidential=False, revoked_member=False))
+        .filter(area_id__in=areas, is_member=True)
     )
 
 

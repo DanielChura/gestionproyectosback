@@ -1,5 +1,6 @@
 from rest_framework import viewsets
 from rest_framework.exceptions import MethodNotAllowed
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -19,7 +20,11 @@ class AdminAreasView(APIView):
 class AreaViewSet(viewsets.ModelViewSet):
     queryset = Area.objects.all()
     serializer_class = AreaSerializer
-    permission_classes = [IsAdministrator]
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [IsAuthenticated()]
+        return [IsAdministrator()]
 
     def destroy(self, request, *args, **kwargs):
         raise MethodNotAllowed(
@@ -42,7 +47,11 @@ class AreaViewSet(viewsets.ModelViewSet):
 class SpecialtyViewSet(viewsets.ModelViewSet):
     queryset = Specialty.objects.all()
     serializer_class = SpecialtySerializer
-    permission_classes = [IsAdministrator]
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [IsAuthenticated()]
+        return [IsAdministrator()]
 
     def destroy(self, request, *args, **kwargs):
         raise MethodNotAllowed(

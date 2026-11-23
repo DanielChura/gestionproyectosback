@@ -33,9 +33,6 @@ class TeamViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        user = self.request.user
-        if user.global_role != "ADMINISTRADOR":
-            queryset = queryset.filter(area__in=authorized_areas(user.worker))
         area_id = self.request.query_params.get("area_id")
         if area_id:
             queryset = queryset.filter(area_id=area_id)
