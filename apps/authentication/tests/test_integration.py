@@ -383,6 +383,10 @@ class AuthenticationFlowTests(unittest.TestCase):
         response = self.post("/api/auth/admin/invitations/", self.invite_data(), access)
         self.assertEqual(response.status_code, 503)
         user = User.objects.get(worker__email="new@gmail.com")
+        failure = response.json()
+        self.assertEqual(failure["account_id"], str(user.pk))
+        self.assertEqual(failure["delivery_status"], "failed")
+        self.assertIn("rechazó", failure["detail"])
         self.assertFalse(user.is_active)
         self.assertEqual(user.invitation.delivery_status, "failed")
         first_token = send_link.call_args.args[3]
@@ -390,6 +394,10 @@ class AuthenticationFlowTests(unittest.TestCase):
         send_link.side_effect = DeliveryError("synthetic timeout", "unknown")
         response = self.post(f"/api/auth/admin/accounts/{user.pk}/resend-invitation/", bearer=access)
         self.assertEqual(response.status_code, 503)
+        failure = response.json()
+        self.assertEqual(failure["account_id"], str(user.pk))
+        self.assertEqual(failure["delivery_status"], "unknown")
+        self.assertIn("no se confirmó", failure["detail"])
         user.invitation.refresh_from_db()
         self.assertEqual(user.invitation.delivery_status, "unknown")
         uncertain_token = send_link.call_args.args[3]
@@ -410,6 +418,16 @@ class AuthenticationFlowTests(unittest.TestCase):
             ).status_code,
             400,
         )
+
+    @patch("apps.authentication.services.accounts.send_link")
+    def test_unconfirmed_invitation_delivery_is_retried_once(self, send_link):
+        access = self.admin_access()
+        send_link.side_effect = [DeliveryError("synthetic timeout", "unknown"), "synthetic-accepted-id"]
+        response = self.post("/api/auth/admin/invitations/", self.invite_data(), access)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["delivery_status"], "accepted")
+        self.assertEqual(send_link.call_count, 2)
+        self.assertEqual(send_link.call_args_list[0].args[3], send_link.call_args_list[1].args[3])
 
     def test_admin_global_scope_and_worker_membership_assignment_restrictions(self):
         admin = self.account("ADMIN", "admin@example.com", "ADMINISTRADOR")

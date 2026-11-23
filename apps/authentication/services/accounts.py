@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from datetime import timedelta
 import hmac
+import time
 from uuid import uuid4
 
 from django.conf import settings
@@ -24,16 +25,39 @@ from .eligibility import account_eligible
 
 class InvitationConflict(APIException):
     status_code = 409
-    default_detail = "Hay un envío en curso. Intenta nuevamente en un momento"
+    default_detail = "Hay un envío en curso. Espera unos segundos y vuelve a intentarlo"
 
 
 class InvitationDeliveryError(APIException):
     status_code = 503
-    default_detail = "La cuenta quedó pendiente. No se confirmó el envío; puedes reintentarlo desde Cuentas"
+    default_detail = (
+        "La cuenta fue creada exitosamente, pero el proveedor de correo tardó en confirmar la entrega. "
+        "Puedes reenviar la invitación desde la lista de Cuentas y accesos."
+    )
+
+
+INVITATION_FAILED_DETAIL = (
+    "La cuenta quedó pendiente: el proveedor de correo rechazó el envío. "
+    "Reenvía desde Cuentas y accesos; si persiste, revisa el remitente configurado."
+)
+INVITATION_UNCONFIRMED_DETAIL = (
+    "La cuenta quedó pendiente: no se confirmó el envío del correo. "
+    "Espera un momento y reenvía desde Cuentas y accesos."
+)
 
 
 def email_digest(email):
     return digest_token(email.strip().lower())
+
+
+def deliver_activation(email, name, token):
+    for attempt in range(2):
+        try:
+            return send_link(email, name, "activation", token)
+        except DeliveryError:
+            if attempt == 1:
+                raise
+            time.sleep(1)
 
 
 def register_account(data, actor):
@@ -94,7 +118,7 @@ def deliver_invitation(user_id, actor):
         invitation.provider_message_id = ""
         invitation.save()
     try:
-        message_id = send_link(user.worker.email, user.worker.first_names, "activation", token)
+        message_id = deliver_activation(user.worker.email, user.worker.first_names, token)
     except DeliveryError as error:
         Invitation.objects.filter(pk=invitation.pk, token=record).update(delivery_status=error.delivery_status)
         if error.delivery_status == "failed":
@@ -105,8 +129,17 @@ def deliver_invitation(user_id, actor):
             account_id=user.pk,
             detail=error.delivery_status,
         )
+        detail = (
+            INVITATION_FAILED_DETAIL
+            if error.delivery_status == "failed"
+            else INVITATION_UNCONFIRMED_DETAIL
+        )
         raise InvitationDeliveryError(
-            {"detail": InvitationDeliveryError.default_detail, "account_id": user.pk}
+            {
+                "detail": detail,
+                "account_id": user.pk,
+                "delivery_status": error.delivery_status,
+            }
         ) from None
     Invitation.objects.filter(pk=invitation.pk, token=record).update(
         delivery_status="accepted", provider_message_id=message_id
@@ -116,7 +149,11 @@ def deliver_invitation(user_id, actor):
         actor_id=getattr(actor, "pk", None),
         account_id=user.pk,
     )
-    return {"detail": "Invitación aceptada por el proveedor de correo", "account_id": user.pk}
+    return {
+        "detail": "Correo de activación enviado. Puede tardar unos minutos; revisa también la carpeta de spam.",
+        "account_id": user.pk,
+        "delivery_status": "accepted",
+    }
 
 
 def link_account(token, purpose):

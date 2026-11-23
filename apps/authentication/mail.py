@@ -40,17 +40,24 @@ def send_smtp(email, subject, message):
         [email],
         headers={"Message-ID": message_id},
     )
-    try:
-        mail.send(fail_silently=False)
-    except (
-        smtplib.SMTPAuthenticationError,
-        smtplib.SMTPSenderRefused,
-        smtplib.SMTPRecipientsRefused,
-        smtplib.SMTPDataError,
-    ):
-        raise DeliveryError("El proveedor rechazó el envío") from None
-    except (smtplib.SMTPException, OSError, TimeoutError):
-        raise DeliveryError("No se confirmó la aceptación del correo", "unknown") from None
+    max_attempts = 2
+    for attempt in range(max_attempts):
+        try:
+            mail.send(fail_silently=False)
+            return message_id
+        except (
+            smtplib.SMTPAuthenticationError,
+            smtplib.SMTPSenderRefused,
+            smtplib.SMTPRecipientsRefused,
+            smtplib.SMTPDataError,
+        ):
+            raise DeliveryError("El proveedor rechazó el envío") from None
+        except (smtplib.SMTPException, OSError, TimeoutError):
+            if attempt < max_attempts - 1:
+                import time
+                time.sleep(1)
+                continue
+            raise DeliveryError("No se confirmó la aceptación del correo", "unknown") from None
     return message_id
 
 
