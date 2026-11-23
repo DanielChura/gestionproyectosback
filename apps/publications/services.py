@@ -34,7 +34,7 @@ def _base_queryset():
     )
 
 
-def _auto_close_publications():
+def _auto_close_publications(user):
     today = timezone.localdate()
     expired = ProjectPublication.objects.filter(
         state=PublicationState.OPEN, closing_date__lt=today
@@ -44,9 +44,10 @@ def _auto_close_publications():
     ).values_list("pk", flat=True)
     ids = {*expired, *full}
     if ids:
-        ProjectPublication.objects.filter(
-            pk__in=ids, state=PublicationState.OPEN
-        ).update(state=PublicationState.CLOSED)
+        with audit_actor(user):
+            ProjectPublication.objects.filter(
+                pk__in=ids, state=PublicationState.OPEN
+            ).update(state=PublicationState.CLOSED)
 
 
 def publication_queryset(user):
@@ -82,7 +83,7 @@ def publication_queryset(user):
 
 def publication_for_user(user, publication_id):
     if user.global_role == "ADMINISTRADOR":
-        _auto_close_publications()
+        _auto_close_publications(user)
     publication = publication_queryset(user).filter(pk=publication_id).first()
     if publication is None:
         raise NotFound("Publicación no disponible")
@@ -91,7 +92,7 @@ def publication_for_user(user, publication_id):
 
 def list_publications(user, params):
     if user.global_role == "ADMINISTRADOR":
-        _auto_close_publications()
+        _auto_close_publications(user)
     queryset = publication_queryset(user)
     project_id = params.get("project_id", "").strip()
     if project_id:
