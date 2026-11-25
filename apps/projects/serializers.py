@@ -109,6 +109,8 @@ class TaskCreateSerializer(StrictSerializer):
     labels = LabelSerializer(many=True, required=False, default=list, max_length=50)
     specialty_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, max_length=50)
     retained_label_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, max_length=50)
+    state_code = serializers.CharField(max_length=20, required=False)
+    reason = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
 
     def validate(self, attrs):
         if "schedule" in attrs and {"start_date", "due_date"} & attrs.keys():
@@ -138,6 +140,8 @@ class TaskEditSerializer(StrictSerializer):
     labels = LabelSerializer(many=True, required=False, max_length=50)
     specialty_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, max_length=50)
     retained_label_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, max_length=50)
+    state_code = serializers.CharField(max_length=20, required=False)
+    reason = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
 
     def validate(self, attrs):
         from .services.calendar import validate_calendar_preconditions
@@ -161,6 +165,42 @@ class TaskEditSerializer(StrictSerializer):
 class TaskStateSerializer(StrictSerializer):
     state_code = serializers.CharField(max_length=20)
     reason = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
+
+
+class TaskTitleSerializer(StrictSerializer):
+    name = serializers.CharField(max_length=180, required=False)
+    title = serializers.CharField(max_length=180, required=False)
+
+    def validate(self, attrs):
+        value = attrs.get("name") or attrs.get("title")
+        if not value or not value.strip():
+            raise serializers.ValidationError({"name": "Indica el título de la tarea"})
+        return {"name": value.strip()}
+
+
+class TaskDescriptionSerializer(StrictSerializer):
+    description = serializers.CharField(max_length=10000, required=False, allow_blank=True, default="")
+
+
+class TaskAssigneesSerializer(StrictSerializer):
+    responsible_id = serializers.IntegerField(min_value=1, allow_null=True, required=False)
+    responsible_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), required=False, max_length=200)
+
+    def validate(self, attrs):
+        validate_assignee_input(attrs, self.initial_data)
+        if not attrs:
+            raise serializers.ValidationError({"detail": "Indica el responsable o responsables"})
+        return attrs
+
+
+class TaskDatesSerializer(StrictSerializer):
+    start_date = serializers.DateField(required=False, allow_null=True)
+    due_date = serializers.DateField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError({"detail": "Indica al menos una fecha"})
+        return attrs
 
 
 class TaskMoveSerializer(TaskStateSerializer):

@@ -37,13 +37,14 @@ def account_page(user, query):
 
 
 def recovery_page(user, query):
-    requests = RecoveryRequest.objects.filter(resolved_at__isnull=True).select_related("user", "user__worker")
+    requests = RecoveryRequest.objects.select_related("user", "user__worker")
     requests = search_people(requests, query["search"], "user__worker__")
     return cursor_page(
         requests, query=query, user=user, resource="recoveries", oldest=True,
         serialize=lambda rows: [
             {"id": entry.pk, "name": f"{entry.user.worker.first_names} {entry.user.worker.last_names}",
-             "email": entry.user.worker.email, "requested_at": entry.requested_at}
+             "email": entry.user.worker.email, "requested_at": entry.requested_at,
+             "resolved_at": entry.resolved_at}
             for entry in rows
         ],
     )

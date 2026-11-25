@@ -24,8 +24,12 @@ from .serializers import (
     TaskStatusTemplateSerializer,
     TaskRelationSerializer,
     TaskMoveSerializer,
+    TaskTitleSerializer,
+    TaskDescriptionSerializer,
+    TaskAssigneesSerializer,
+    TaskDatesSerializer,
 )
-from .services.access import project_for_user, require_admin, tasks_for_user
+from .services.access import project_for_user, require_admin, task_for_user, tasks_for_user
 from .services.charts import project_chart_data
 from .services.dependency_undo import issue_undo
 from .services.favorites import set_project_favorite
@@ -246,6 +250,57 @@ class TaskDetailView(ProjectApiView):
     def patch(self, request, project_id, task_id):
         serializer = TaskEditSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+        task = None
+        if "state_code" in data:
+            state_data = {"state_code": data.pop("state_code"), "reason": data.pop("reason", "")}
+            task = change_task_state(request.user, project_id, task_id, state_data)
+        if data:
+            task = edit_task(request.user, project_id, task_id, data)
+        elif task is None:
+            task = task_for_user(request.user, project_for_user(request.user, project_id), task_id)
+        snapshot = task_snapshot(task, task.project, request.user)
+        if hasattr(task, "calendar_receipt"):
+            snapshot["calendar_receipt"] = task.calendar_receipt
+        return Response(snapshot)
+
+
+class TaskTitleView(ProjectApiView):
+    serializer_class = TaskTitleSerializer
+
+    def patch(self, request, project_id, task_id):
+        serializer = TaskTitleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        task = edit_task(request.user, project_id, task_id, {"name": serializer.validated_data["name"]})
+        return Response(task_snapshot(task, task.project, request.user))
+
+
+class TaskDescriptionView(ProjectApiView):
+    serializer_class = TaskDescriptionSerializer
+
+    def patch(self, request, project_id, task_id):
+        serializer = TaskDescriptionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        task = edit_task(request.user, project_id, task_id, {"description": serializer.validated_data["description"]})
+        return Response(task_snapshot(task, task.project, request.user))
+
+
+class TaskAssigneesView(ProjectApiView):
+    serializer_class = TaskAssigneesSerializer
+
+    def patch(self, request, project_id, task_id):
+        serializer = TaskAssigneesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        task = edit_task(request.user, project_id, task_id, serializer.validated_data)
+        return Response(task_snapshot(task, task.project, request.user))
+
+
+class TaskDatesView(ProjectApiView):
+    serializer_class = TaskDatesSerializer
+
+    def patch(self, request, project_id, task_id):
+        serializer = TaskDatesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         task = edit_task(request.user, project_id, task_id, serializer.validated_data)
         snapshot = task_snapshot(task, task.project, request.user)
         if hasattr(task, "calendar_receipt"):
@@ -261,6 +316,9 @@ class TaskStateView(ProjectApiView):
         serializer.is_valid(raise_exception=True)
         task = change_task_state(request.user, project_id, task_id, serializer.validated_data)
         return Response(task_snapshot(task, task.project, request.user))
+
+    def patch(self, request, project_id, task_id):
+        return self.post(request, project_id, task_id)
 
 
 class TaskDependenciesView(ProjectApiView):

@@ -5,7 +5,8 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 
 from apps.organization.models import Specialty
 from apps.projects.models import Project, ProjectMember, ProjectState
-from apps.projects.services.access import require_admin, visible_projects
+from apps.projects.services.access import require_admin
+from apps.workers.services.areas import authorized_areas
 from apps.projects.services.audit import audit_actor
 
 from .models import ProjectPublication, PublicationAssignment, PublicationRequirement, PublicationState
@@ -56,6 +57,7 @@ def publication_queryset(user):
         return queryset
     if user.global_role != "TRABAJADOR":
         raise PermissionDenied("Cuenta no autorizada")
+    today = timezone.localdate()
     return queryset.annotate(
         applied=Exists(
             PublicationAssignment.objects.filter(
@@ -71,6 +73,14 @@ def publication_queryset(user):
                 active=True,
             )
         ),
+    ).filter(
+        project__area_id__in=authorized_areas(user.worker).values("pk"),
+        project__archived=False,
+        project__state_code__in=ProjectState.objects.filter(terminal=False).values("pk"),
+        state=PublicationState.OPEN,
+        opening_date__lte=today,
+        closing_date__gte=today,
+        occupied__lt=F("vacancies"),
     )
 
 
@@ -332,7 +342,10 @@ def apply_publication(user, publication_id):
     if worker is None:
         raise PermissionDenied("Cuenta no autorizada")
     if not ProjectPublication.objects.filter(
-        pk=publication_id, project_id__in=visible_projects(user).values("pk")
+        pk=publication_id,
+        project__area_id__in=authorized_areas(worker).values("pk"),
+        project__archived=False,
+        project__state_code__in=ProjectState.objects.filter(terminal=False).values("pk"),
     ).exists():
         raise NotFound("Publicación no disponible")
 

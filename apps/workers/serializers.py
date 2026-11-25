@@ -4,7 +4,7 @@ from django.db import transaction
 from rest_framework import serializers
 
 from apps.organization.models import Specialty
-from .models import Worker, WorkerSpecialty
+from .models import Worker, WorkerArea, WorkerSpecialty
 from .services.specialties import replace_worker_specialties
 from .validators import gmail_address
 
@@ -76,11 +76,26 @@ class WorkerSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         specialties_data = validated_data.pop("worker_specialties", None)
+        sync_areas = "all_areas" in validated_data or "area" in validated_data
         with transaction.atomic():
             instance = Worker.objects.select_for_update().get(pk=instance.pk)
             for attr, value in validated_data.items():
                 setattr(instance, attr, value)
             instance.save()
+            if sync_areas:
+                WorkerArea.objects.filter(worker=instance).delete()
+                if instance.all_areas:
+                    from apps.organization.models import Area
+
+                    WorkerArea.objects.bulk_create(
+                        [WorkerArea(worker=instance, area=area) for area in Area.objects.filter(active=True)],
+                        ignore_conflicts=True,
+                    )
+                elif instance.area_id is not None:
+                    WorkerArea.objects.bulk_create(
+                        [WorkerArea(worker=instance, area_id=instance.area_id)],
+                        ignore_conflicts=True,
+                    )
             if specialties_data is not None:
                 replace_worker_specialties(instance, specialties_data)
         return instance
