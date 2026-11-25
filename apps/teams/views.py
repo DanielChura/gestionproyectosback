@@ -25,7 +25,7 @@ class TeamViewSet(viewsets.ModelViewSet):
             raise ValidationError({"detail": "El equipo está asociado a proyectos. Desactívalo para conservar su historial."}) from None
 
     def get_permissions(self):
-        if self.action in ("list", "retrieve") or (
+        if self.action in ("list", "retrieve", "mine") or (
             self.action == "members" and self.request.method == "GET"
         ):
             return [IsAuthenticated()]
@@ -46,6 +46,12 @@ class TeamViewSet(viewsets.ModelViewSet):
         search = self.request.query_params.get("search", "").strip()
         if search:
             queryset = queryset.filter(name__icontains=search[:120])
+        mine = self.request.query_params.get("mine")
+        if (mine in ("true", "1") or self.action == "mine") and getattr(self.request.user, "global_role", None) != "ADMINISTRADOR":
+            queryset = queryset.filter(
+                members__worker_id=self.request.user.worker_id,
+                members__left_date__isnull=True,
+            ).distinct()
         return queryset.annotate(active_members=Count("members", filter=Q(members__left_date__isnull=True)))
 
     @action(detail=True, methods=["get", "post"], url_path="members")
@@ -69,3 +75,9 @@ class TeamViewSet(viewsets.ModelViewSet):
         with audit_actor(request.user):
             remove_team_member(team, member_id)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=False, methods=["get"], url_path="mine")
+    def mine(self, request):
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)

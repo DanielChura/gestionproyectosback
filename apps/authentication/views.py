@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
+from decimal import Decimal, InvalidOperation
 from django.db import transaction
 from django.http import JsonResponse
 from django.middleware.csrf import get_token
@@ -15,7 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.pagination import ListQuerySerializer
-from apps.workers.models import Worker
+from apps.workers.models import Worker, WorkerArea
 from apps.workers.services.areas import area_summary
 from apps.workers.validators import gmail_address
 
@@ -52,17 +53,22 @@ from .tokens import InvalidToken, consume_stored, decode_token, issue_access, is
 
 
 def profile(user):
+    worker = user.worker
     return {
         "id": user.pk,
-        "name": f"{user.worker.first_names} {user.worker.last_names}".strip(),
-        "email": user.worker.email,
+        "name": f"{worker.first_names} {worker.last_names}".strip(),
+        "first_names": worker.first_names,
+        "last_names": worker.last_names,
+        "email": worker.email,
         "role": user.global_role,
+        "weekly_hours": str(worker.weekly_hours),
+        "area_id": worker.area_id,
         "permissions": {
             "manage_accounts": user.global_role == "ADMINISTRADOR",
             "manage_projects": user.global_role == "ADMINISTRADOR",
             "supervise_projects": user.global_role == "ADMINISTRADOR",
         },
-        **area_summary(user.worker),
+        **area_summary(worker),
     }
 
 
@@ -195,7 +201,16 @@ class MeView(APIView):
             if Worker.objects.filter(email__iexact=email).exclude(pk=worker.pk).exists():
                 raise ValidationError({"email": "El correo ya está registrado por otra cuenta. Usa otro correo e intenta de nuevo."})
             worker.email = email
+        if "weekly_hours" in data:
+            try:
+                hours = Decimal(str(data.get("weekly_hours")))
+            except (InvalidOperation, ValueError, TypeError) as error:
+                raise ValidationError({"weekly_hours": "Horas semanales inválidas."}) from error
+            if hours <= 0 or hours > 168:
+                raise ValidationError({"weekly_hours": "Indica entre 0.01 y 168 horas semanales."})
+            worker.weekly_hours = hours
         worker.save()
+
         password = data.get("password")
         if password:
             user.set_password(str(password))

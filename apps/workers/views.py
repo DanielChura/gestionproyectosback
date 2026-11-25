@@ -21,7 +21,7 @@ class WorkerViewSet(viewsets.ModelViewSet):
     serializer_class = WorkerSerializer
 
     def get_permissions(self):
-        if self.action in ("list", "retrieve", "my_specialty_options"):
+        if self.action in ("list", "retrieve", "my_specialty_options", "me_specialties", "me_specialty_detail"):
             return [IsAuthenticated()]
         return [IsAdministrator()]
 
